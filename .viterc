@@ -1,0 +1,18 @@
+{
+  "optimizeDeps": {
+    "disabled": false,
+    "include": [
+      "react",
+      "react-dom",
+      "@mui/material",
+      "@mui/icons-material",
+      "@emotion/react",
+      "@emotion/styled"
+    ]
+  },
+  "resolve": {
+    "alias": {
+      "@": "/src/renderer"
+    }
+  }
+}

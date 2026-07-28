@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "POS Móvil",
+    "slug": "pos-movil",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "backgroundColor": "#0a0e1a"
+    },
+    "ios": {
+      "infoPlist": {
+        "NSCameraUsageDescription": "Necesitamos acceso a la cámara para escanear códigos de barras"
+      },
+      "supportsTablet": false,
+      "bundleIdentifier": "com.tienda.posmovil"
+    },
+    "android": {
+      "package": "com.tienda.posmovil",
+      "adaptiveIcon": {
+        "backgroundColor": "#0a0e1a",
+        "foregroundImage": "./assets/android-icon-foreground.png"
+      },
+      "permissions": ["android.permission.CAMERA"]
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Necesitamos acceso a la cámara para escanear códigos de barras"
+        }
+      ]
+    ]
+  }
+}
