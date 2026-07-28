@@ -18,7 +18,7 @@ Sistema POS de escritorio con aplicación móvil complementaria para escaneo de 
 
 ```bash
 # Clonar
-git clone <repo>
+git clone https://github.com/Jacob-Jp/jrp-pos.git
 cd my-pos-system
 
 # Instalar dependencias
