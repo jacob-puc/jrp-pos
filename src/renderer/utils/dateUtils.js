@@ -9,8 +9,15 @@ export const mxToday = () => {
   return mxNow().toISOString().slice(0, 10);
 };
 
+const toUTC = (date) => {
+  if (typeof date === "string" && date.includes(" ")) {
+    return date.replace(" ", "T") + "Z";
+  }
+  return date;
+};
+
 export const formatMXDate = (date, options = {}) => {
-  const d = new Date(date);
+  const d = new Date(toUTC(date));
   return d.toLocaleDateString("es-MX", {
     timeZone: MX_TIMEZONE,
     ...options,
@@ -18,7 +25,7 @@ export const formatMXDate = (date, options = {}) => {
 };
 
 export const formatMXTime = (date, options = {}) => {
-  const d = new Date(date);
+  const d = new Date(toUTC(date));
   return d.toLocaleTimeString("es-MX", {
     hour: "2-digit",
     minute: "2-digit",
@@ -28,11 +35,11 @@ export const formatMXTime = (date, options = {}) => {
 };
 
 export const formatMXDateTime = (date) => {
-  const d = new Date(date);
+  const d = new Date(toUTC(date));
   return `${formatMXDate(d)} ${formatMXTime(d)}`;
 };
 
 export const getMXDateString = (date) => {
-  const d = new Date(date);
+  const d = new Date(toUTC(date));
   return d.toLocaleDateString("en-CA", { timeZone: MX_TIMEZONE });
 };

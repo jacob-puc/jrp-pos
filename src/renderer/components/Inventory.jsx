@@ -1,14 +1,55 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
-  Box, Button, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
-  Typography, Card, CardContent, TextField, InputAdornment, Chip, Stack, IconButton,
-  Tooltip, useTheme, TablePagination, Alert, Dialog, DialogTitle, DialogContent,
-  DialogActions, DialogContentText, Avatar, Grid, Fade, Divider, MenuItem, LinearProgress,
+  Box,
+  Button,
+  Paper,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Typography,
+  Card,
+  TextField,
+  InputAdornment,
+  Chip,
+  Stack,
+  IconButton,
+  Tooltip,
+  useTheme,
+  TablePagination,
+  Alert,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  DialogContentText,
+  Avatar,
+  Grid,
+  Fade,
+  Divider,
+  MenuItem,
+  LinearProgress,
 } from "@mui/material";
 import {
-  AddCircleOutline, Search, Inventory2, TrendingUp, TrendingDown, AttachMoney,
-  Print, Edit, Delete, Visibility, Add, Warehouse, Discount,
-  ArrowUpward, ArrowDownward, Store,
+  AddCircleOutline,
+  Search,
+  Inventory2,
+  TrendingUp,
+  AttachMoney,
+  FileDownloadOutlined,
+  EditOutlined,
+  DeleteOutlined,
+  VisibilityOutlined,
+  Add,
+  Warehouse,
+  Discount,
+  Warning,
+  ArrowUpward,
+  ArrowDownward,
+  Store,
+  Close,
 } from "@mui/icons-material";
 import AddProductModal from "./AddProductModal";
 import { TableSkeleton, CardSkeleton } from "./Skeletons";
@@ -17,7 +58,12 @@ import CancelButton from "./CancelButton";
 const Inventory = () => {
   const [products, setProducts] = useState([]);
   const [total, setTotal] = useState(0);
-  const [stats, setStats] = useState({ totalCount: 0, totalValue: 0, lowStockCount: 0, discountedCount: 0 });
+  const [stats, setStats] = useState({
+    totalCount: 0,
+    totalValue: 0,
+    lowStockCount: 0,
+    discountedCount: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
@@ -38,21 +84,47 @@ const Inventory = () => {
   const [sortDir, setSortDir] = useState("asc");
   const theme = useTheme();
   const isDark = theme.palette.mode === "dark";
+  const scanBufferRef = useRef("");
+  const scanTimeoutRef = useRef(null);
+  const [initialBarcode, setInitialBarcode] = useState("");
 
   const fetchProducts = useCallback(async () => {
     setLoading(true);
     const [result, cats, sups] = await Promise.all([
-      window.api.invoke("get-products", { search: searchTerm || undefined, category_id: selectedCategory || undefined, supplier_id: selectedSupplier || undefined, sortField, sortDir, page, rowsPerPage }),
+      window.api.invoke("get-products", {
+        search: searchTerm || undefined,
+        category_id: selectedCategory || undefined,
+        supplier_id: selectedSupplier || undefined,
+        sortField,
+        sortDir,
+        page,
+        rowsPerPage,
+      }),
       window.api.invoke("get-categories"),
       window.api.invoke("get-suppliers"),
     ]);
     setProducts(result.products);
     setTotal(result.total);
-    setStats(result.stats || { totalCount: 0, totalValue: 0, lowStockCount: 0, discountedCount: 0 });
+    setStats(
+      result.stats || {
+        totalCount: 0,
+        totalValue: 0,
+        lowStockCount: 0,
+        discountedCount: 0,
+      },
+    );
     setCategories(cats || []);
     setSuppliers(sups || []);
     setLoading(false);
-  }, [searchTerm, selectedCategory, selectedSupplier, sortField, sortDir, page, rowsPerPage]);
+  }, [
+    searchTerm,
+    selectedCategory,
+    selectedSupplier,
+    sortField,
+    sortDir,
+    page,
+    rowsPerPage,
+  ]);
 
   useEffect(() => {
     fetchProducts();
@@ -65,17 +137,68 @@ const Inventory = () => {
   }, []);
 
   useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (document.activeElement?.tagName === "INPUT") return;
+
+      if (e.key === "Enter") {
+        const code = scanBufferRef.current;
+        scanBufferRef.current = "";
+        if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+        if (code.length >= 3) {
+          (async () => {
+            const result = await window.api.invoke(
+              "get-product-by-barcode",
+              code,
+            );
+            if (result.success && result.product) {
+              setSelectedProduct(result.product);
+              setStockQuantity(1);
+              setStockCost("");
+              setStockModalOpen(true);
+            } else {
+              setInitialBarcode(code);
+              setIsModalOpen(true);
+            }
+          })();
+        }
+        return;
+      }
+
+      if (e.key.length === 1) {
+        scanBufferRef.current += e.key;
+        if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+        scanTimeoutRef.current = setTimeout(() => {
+          scanBufferRef.current = "";
+        }, 100);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
     setPage(0);
   }, [searchTerm, selectedCategory, selectedSupplier]);
 
   const handleSort = (field) => {
     if (sortField === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else { setSortField(field); setSortDir("asc"); }
+    else {
+      setSortField(field);
+      setSortDir("asc");
+    }
   };
 
   const SortIcon = ({ field }) => {
     if (sortField !== field) return null;
-    return sortDir === "asc" ? <ArrowUpward sx={{ fontSize: 14, ml: 0.3 }} /> : <ArrowDownward sx={{ fontSize: 14, ml: 0.3 }} />;
+    return sortDir === "asc" ? (
+      <ArrowUpward sx={{ fontSize: 14, ml: 0.3 }} />
+    ) : (
+      <ArrowDownward sx={{ fontSize: 14, ml: 0.3 }} />
+    );
   };
 
   const handleProductAdded = () => fetchProducts();
@@ -110,8 +233,15 @@ const Inventory = () => {
 
   const confirmAddStock = async () => {
     if (!selectedProduct || stockQuantity <= 0) return;
-    const actualQty = selectedProduct.sale_unit === "box" && selectedProduct.box_qty > 0 ? stockQuantity * selectedProduct.box_qty : stockQuantity;
-    const result = await window.api.invoke("add-stock", { productId: selectedProduct.id, quantity: actualQty, cost: parseFloat(stockCost) || 0 });
+    const actualQty =
+      selectedProduct.sale_unit === "box" && selectedProduct.box_qty > 0
+        ? stockQuantity * selectedProduct.box_qty
+        : stockQuantity;
+    const result = await window.api.invoke("add-stock", {
+      productId: selectedProduct.id,
+      quantity: actualQty,
+      cost: parseFloat(stockCost) || 0,
+    });
     if (result.success) {
       setStockModalOpen(false);
       setSelectedProduct(null);
@@ -128,142 +258,214 @@ const Inventory = () => {
     return { label: "En Stock", color: "success" };
   };
 
-  const calcDiscountedPrice = (price, discount) => price * (1 - (discount || 0) / 100);
-  const stockUnit = (p) => p.sale_unit === "weight" ? "kg" : p.sale_unit === "box" ? "cajas" : "pz";
+  const calcDiscountedPrice = (price, discount) =>
+    price * (1 - (discount || 0) / 100);
+  const stockUnit = (p) =>
+    p.sale_unit === "weight" ? "kg" : p.sale_unit === "box" ? "cajas" : "pz";
   const stockDisplay = (p) => {
-    if (p.sale_unit === "box" && p.box_qty > 0 && p.stock >= p.box_qty) return `${Math.floor(p.stock / p.box_qty)} cajas (${p.stock} pz)`;
-    if (p.sale_unit === "weight") return `${p.stock} ${p.stock === 1 ? "kg" : "kg"}`;
+    if (p.sale_unit === "box" && p.box_qty > 0 && p.stock >= p.box_qty)
+      return `${Math.floor(p.stock / p.box_qty)} cajas (${p.stock} pz)`;
+    if (p.sale_unit === "weight")
+      return `${p.stock} ${p.stock === 1 ? "kg" : "kg"}`;
     return `${p.stock} pz`;
   };
-  const boxPriceDisplay = (p) => p.sale_unit === "box" && p.box_qty > 0 && p.stock >= p.box_qty ? p.box_price : p.price;
+  const boxPriceDisplay = (p) =>
+    p.sale_unit === "box" && p.box_qty > 0 && p.stock >= p.box_qty
+      ? p.box_price
+      : p.price;
 
-  const printInventoryReport = () => {
-    const now = new Date();
-    const totalValue = Number(stats.totalValue);
-    const lowStockCount = stats.lowStockCount;
-    const win = window.open("", "_blank");
-    win.document.write(`<!DOCTYPE html><html><head><title>Reporte de Inventario</title>
-      <style>body{font-family:Arial,sans-serif;margin:20px;color:#333}
-      h1{color:#2563eb;text-align:center}
-      table{width:100%;border-collapse:collapse;margin:20px 0;font-size:12px}
-      th{background:#2563eb;color:white;padding:10px;text-align:left}
-      td{padding:8px;border-bottom:1px solid #ddd}
-      .summary{display:flex;gap:20px;margin:20px 0;justify-content:center}
-      .card{border:2px solid #e2e8f0;border-radius:8px;padding:20px;text-align:center;min-width:150px}
-      .num{font-size:24px;font-weight:bold}
-      .footer{text-align:center;margin-top:40px;color:#666;font-size:12px}
-      .discount{color:#dc2626;text-decoration:line-through;margin-right:5px}
-    </style></head><body>
-      <h1>Reporte de Inventario</h1>
-      <p style="text-align:center">Generado el ${now.toLocaleDateString()} a las ${now.toLocaleTimeString()}</p>
-      <div class="summary">
-        <div class="card"><div>Total Productos</div><div class="num">${products.length}</div></div>
-        <div class="card"><div>Valor Total</div><div class="num">$${totalValue.toFixed(2)}</div></div>
-        <div class="card"><div>Stock Bajo</div><div class="num" style="color:#dc2626">${lowStockCount}</div></div>
-        <div class="card"><div>En Rebaja</div><div class="num" style="color:#dc2626">${stats.discountedCount}</div></div>
-      </div>
-      <table><tr><th>Producto</th><th>Precio</th><th>Stock</th><th>Estado</th></tr>
-      ${products.map(p => {
-        const s = getStockStatus(p.stock, p.min_stock);
+  const exportInventoryCSV = async () => {
+    const result = await window.api.invoke("get-all-products");
+    const allProducts = result.products || [];
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const header =
+      "ID,Nombre,Marca,Categoría,Proveedor,Precio,Rebaja %,Precio Final,Stock,Unidad,Stock Mínimo,Código de Barras\n";
+    const rows = allProducts
+      .map((p) => {
         const finalPrice = calcDiscountedPrice(p.price, p.discount_percent);
-        return `<tr><td><strong>${p.name}</strong><br><small>${p.brand || ""}</small></td>
-          <td>${p.discount_percent > 0 ? `<span class="discount">$${p.price.toFixed(2)}</span> $${finalPrice.toFixed(2)}` : `$${p.price.toFixed(2)}`}</td>
-          <td>${p.stock}</td><td>${s.label}</td></tr>`;
-      }).join("")}
-      </table>
-      <div class="footer">Reporte generado automáticamente por el Sistema POS</div>
-    </body></html>`);
-    win.document.close();
-    win.print();
+        return [
+          p.id,
+          esc(p.name),
+          esc(p.brand),
+          esc(p.category_name),
+          esc(p.supplier_name),
+          Number(p.price || 0).toFixed(2),
+          Number(p.discount_percent || 0),
+          finalPrice.toFixed(2),
+          p.stock,
+          stockUnit(p),
+          p.min_stock || 5,
+          esc(p.barcode),
+        ].join(",");
+      })
+      .join("\n");
+    const blob = new Blob(["\uFEFF" + header + rows], {
+      type: "text/csv;charset=utf-8;",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `inventario-completo-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
     <Box sx={{ p: 1, animation: "fadeIn 0.4s ease-out" }}>
-      <Typography variant="h2" sx={{ mb: 2, textAlign: "center", fontSize: "1.8rem" }}>Gestión de Inventario</Typography>
+      <Typography
+        variant="h2"
+        sx={{ mb: 2, textAlign: "center", fontSize: "1.8rem" }}
+      >
+        Gestión de Inventario
+      </Typography>
 
       {loading ? (
         <CardSkeleton count={4} />
       ) : (
         <Fade in={!loading} timeout={500}>
-          <Stack direction={{ xs: "column", md: "row" }} spacing={2} sx={{ mb: 2 }}>
-            <Card sx={{ flex: 1, background: "linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(59, 130, 246, 0.15) 100%)", border: "2px solid rgba(59, 130, 246, 0.2)" }}>
-              <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, py: 1.5, px: 2, "&:last-child": { pb: 1.5 } }}>
-                <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(59, 130, 246, 0.15)" }}>
-                  <Inventory2 sx={{ fontSize: 22, color: theme.palette.primary.main }} />
-                </Box>
-                <Box sx={{ minWidth: 0 }}>
-                  <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.6rem", lineHeight: 1.2 }}>Total Productos</Typography>
-                  <Typography variant="h5" sx={{ fontWeight: 700, color: theme.palette.primary.main, fontSize: "1.25rem", lineHeight: 1.1 }}>{stats.totalCount}</Typography>
-                </Box>
-              </CardContent>
-            </Card>
-            <Card sx={{ flex: 1, background: "linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(16, 185, 129, 0.15) 100%)", border: "2px solid rgba(16, 185, 129, 0.2)" }}>
-              <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, py: 1.5, px: 2, "&:last-child": { pb: 1.5 } }}>
-                <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(16, 185, 129, 0.15)" }}>
-                  <AttachMoney sx={{ fontSize: 22, color: theme.palette.success.main }} />
-                </Box>
-                <Box sx={{ minWidth: 0 }}>
-                  <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.6rem", lineHeight: 1.2 }}>Valor Total</Typography>
-                  <Typography variant="h5" sx={{ fontWeight: 700, color: theme.palette.success.main, fontSize: "1.25rem", lineHeight: 1.1 }}>${Number(stats.totalValue).toFixed(2)}</Typography>
-                </Box>
-              </CardContent>
-            </Card>
-            <Card sx={{ flex: 1, background: "linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.15) 100%)", border: "2px solid rgba(245, 158, 11, 0.2)" }}>
-              <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, py: 1.5, px: 2, "&:last-child": { pb: 1.5 } }}>
-                <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(245, 158, 11, 0.15)" }}>
-                  <Warehouse sx={{ fontSize: 22, color: theme.palette.warning.main }} />
-                </Box>
-                <Box sx={{ minWidth: 0 }}>
-                  <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.6rem", lineHeight: 1.2 }}>Stock Bajo</Typography>
-                  <Typography variant="h5" sx={{ fontWeight: 700, color: theme.palette.warning.main, fontSize: "1.25rem", lineHeight: 1.1 }}>{stats.lowStockCount}</Typography>
-                </Box>
-              </CardContent>
-            </Card>
-            <Card sx={{ flex: 1, background: "linear-gradient(135deg, rgba(239, 68, 68, 0.08) 0%, rgba(239, 68, 68, 0.15) 100%)", border: "2px solid rgba(239, 68, 68, 0.2)" }}>
-              <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, py: 1.5, px: 2, "&:last-child": { pb: 1.5 } }}>
-                <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(239, 68, 68, 0.15)" }}>
-                  <Discount sx={{ fontSize: 22, color: theme.palette.error.main }} />
-                </Box>
-                <Box sx={{ minWidth: 0 }}>
-                  <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.6rem", lineHeight: 1.2 }}>En Rebaja</Typography>
-                  <Typography variant="h5" sx={{ fontWeight: 700, color: theme.palette.error.main, fontSize: "1.25rem", lineHeight: 1.1 }}>{stats.discountedCount}</Typography>
-                </Box>
-              </CardContent>
-            </Card>
-          </Stack>
+          <Grid container spacing={2} sx={{ mb: 2 }}>
+            {[
+              { label: "Total Productos", value: stats.totalCount, icon: Inventory2, color: theme.palette.primary.main },
+              { label: "Valor Total", value: `$${Number(stats.totalValue).toFixed(2)}`, icon: AttachMoney, color: theme.palette.success.main },
+              { label: "Stock Bajo", value: stats.lowStockCount, icon: Warning, color: theme.palette.error.main },
+              { label: "En Rebaja", value: stats.discountedCount, icon: Discount, color: theme.palette.warning.main },
+            ].map((s) => (
+              <Grid size={{ xs: 12, md: 3 }} key={s.label}>
+                <Card
+                  sx={{
+                    height: "100%",
+                    display: "flex",
+                    flexDirection: "column",
+                    justifyContent: "space-between",
+                    p: 2.5,
+                    borderRadius: "12px",
+                    bgcolor: isDark ? "rgba(255,255,255,0.05)" : "grey.50",
+                    border: "1px solid",
+                    borderColor: "divider",
+                    boxShadow: "none",
+                    position: "relative",
+                    overflow: "hidden",
+                  }}
+                >
+                  <Box sx={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, bgcolor: s.color }} />
+                  <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 1 }}>
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        fontWeight: 700,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.08em",
+                        fontSize: "11px",
+                        lineHeight: 1.3,
+                        color: "text.secondary",
+                      }}
+                    >
+                      {s.label}
+                    </Typography>
+                    <Box sx={{ width: 32, height: 32, borderRadius: "9px", display: "flex", alignItems: "center", justifyContent: "center", background: `${s.color}1f`, flexShrink: 0 }}>
+                      <s.icon sx={{ fontSize: 17, color: s.color }} />
+                    </Box>
+                  </Box>
+                  <Typography variant="h5" sx={{ fontWeight: 700, fontSize: { xs: "1.5rem", md: "1.75rem" }, color: "text.primary", lineHeight: 1 }}>
+                    {s.value}
+                  </Typography>
+                </Card>
+              </Grid>
+            ))}
+          </Grid>
         </Fade>
       )}
 
-      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 2, flexWrap: "wrap", gap: 1 }}>
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          mb: 2,
+          flexWrap: "wrap",
+          gap: 1,
+        }}
+      >
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-          <TextField variant="outlined" size="small" placeholder="Buscar productos..." value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)} sx={{ width: 220 }}
-            InputProps={{ startAdornment: <InputAdornment position="start"><Search /></InputAdornment> }} />
-          <TextField select size="small" value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)}
-            sx={{ width: 160 }}>
+          <TextField
+            variant="outlined"
+            size="small"
+            placeholder="Buscar productos..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            sx={{ width: 220 }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <Search />
+                </InputAdornment>
+              ),
+            }}
+          />
+          <TextField
+            select
+            size="small"
+            value={selectedCategory}
+            onChange={(e) => setSelectedCategory(e.target.value)}
+            sx={{ width: 160 }}
+          >
             <MenuItem value="">Todas las categorías</MenuItem>
-            {categories.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
+            {categories.map((c) => (
+              <MenuItem key={c.id} value={c.id}>
+                {c.name}
+              </MenuItem>
+            ))}
           </TextField>
-          <TextField select size="small" value={selectedSupplier} onChange={(e) => setSelectedSupplier(e.target.value)}
-            sx={{ width: 170 }}>
+          <TextField
+            select
+            size="small"
+            value={selectedSupplier}
+            onChange={(e) => setSelectedSupplier(e.target.value)}
+            sx={{ width: 170 }}
+          >
             <MenuItem value="">Todos los proveedores</MenuItem>
-            {suppliers.map((s) => <MenuItem key={s.id} value={s.id}>{s.name}</MenuItem>)}
+            {suppliers.map((s) => (
+              <MenuItem key={s.id} value={s.id}>
+                {s.name}
+              </MenuItem>
+            ))}
           </TextField>
         </Stack>
         <Stack direction="row" spacing={1}>
-          <Button variant="outlined" startIcon={<Print />} onClick={printInventoryReport}
-            sx={{ borderColor: isDark ? "rgba(148, 163, 184, 0.3)" : "rgba(30, 41, 59, 0.25)" }}>Imprimir</Button>
-          <Button variant="contained" startIcon={<AddCircleOutline />} onClick={() => setIsModalOpen(true)}>
+          <Tooltip title="Exportar inventario (CSV)">
+            <IconButton onClick={exportInventoryCSV}
+              sx={{ border: 1, borderColor: isDark ? "rgba(148, 163, 184, 0.3)" : "rgba(30, 41, 59, 0.25)", borderRadius: 2 }}>
+              <FileDownloadOutlined />
+            </IconButton>
+          </Tooltip>
+          <Button
+            variant="contained"
+            startIcon={<AddCircleOutline />}
+            onClick={() => setIsModalOpen(true)}
+          >
             Añadir Producto
           </Button>
-          <Chip label="Ctrl+N" size="small" variant="outlined"
-            sx={{ height: 20, fontSize: "0.55rem", color: "text.secondary", borderColor: isDark ? "rgba(148,163,184,0.12)" : "rgba(148,163,184,0.25)" }} />
+          <Chip
+            label="Ctrl+N"
+            size="small"
+            variant="outlined"
+            sx={{
+              height: 20,
+              fontSize: "0.55rem",
+              color: "text.secondary",
+              borderColor: isDark
+                ? "rgba(148,163,184,0.12)"
+                : "rgba(148,163,184,0.25)",
+            }}
+          />
         </Stack>
       </Box>
 
       {!loading && stats.lowStockCount > 0 && (
         <Alert severity="warning" sx={{ mb: 2, py: 0.5 }}>
-          <Typography variant="body2"><strong>{stats.lowStockCount}</strong> producto(s) con stock bajo</Typography>
+          <Typography variant="body2">
+            <strong>{stats.lowStockCount}</strong> producto(s) con stock bajo
+          </Typography>
         </Alert>
       )}
 
@@ -276,61 +478,185 @@ const Inventory = () => {
               <Table size="small" stickyHeader>
                 <TableHead>
                   <TableRow>
-                    <TableCell sx={{ fontWeight: 700, fontSize: "0.75rem", cursor: "pointer" }} onClick={() => handleSort("name")}>
+                    <TableCell
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: "0.75rem",
+                        cursor: "pointer",
+                      }}
+                      onClick={() => handleSort("name")}
+                    >
                       Producto <SortIcon field="name" />
                     </TableCell>
-                    <TableCell align="right" sx={{ fontWeight: 700, fontSize: "0.75rem", cursor: "pointer" }} onClick={() => handleSort("price")}>
+                    <TableCell
+                      align="right"
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: "0.75rem",
+                        cursor: "pointer",
+                      }}
+                      onClick={() => handleSort("price")}
+                    >
                       Precio <SortIcon field="price" />
                     </TableCell>
-                    <TableCell align="center" sx={{ fontWeight: 700, fontSize: "0.75rem", cursor: "pointer" }} onClick={() => handleSort("stock")}>
+                    <TableCell
+                      align="center"
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: "0.75rem",
+                        cursor: "pointer",
+                      }}
+                      onClick={() => handleSort("stock")}
+                    >
                       Stock <SortIcon field="stock" />
                     </TableCell>
-                    <TableCell align="center" sx={{ fontWeight: 700, fontSize: "0.75rem" }}>Estado</TableCell>
-                    <TableCell align="center" sx={{ fontWeight: 700, fontSize: "0.75rem" }}>Acciones</TableCell>
+                    <TableCell
+                      align="center"
+                      sx={{ fontWeight: 700, fontSize: "0.75rem" }}
+                    >
+                      Estado
+                    </TableCell>
+                    <TableCell
+                      align="center"
+                      sx={{ fontWeight: 700, fontSize: "0.75rem" }}
+                    >
+                      Acciones
+                    </TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {products.map((product) => {
-                    const stockStatus = getStockStatus(product.stock, product.min_stock);
-                    const finalPrice = calcDiscountedPrice(product.price, product.discount_percent);
+                    const stockStatus = getStockStatus(
+                      product.stock,
+                      product.min_stock,
+                    );
+                    const finalPrice = calcDiscountedPrice(
+                      product.price,
+                      product.discount_percent,
+                    );
                     return (
-                      <TableRow key={product.id} sx={{ "&:hover": { backgroundColor: isDark ? "rgba(59, 130, 246, 0.06)" : "rgba(37, 99, 235, 0.04)" } }}>
+                      <TableRow
+                        key={product.id}
+                        sx={{
+                          "& .MuiTableCell-root": {
+                            py: 1.5,
+                          },
+                          "&:hover": {
+                            backgroundColor: isDark
+                              ? "rgba(59, 130, 246, 0.06)"
+                              : "rgba(37, 99, 235, 0.04)",
+                          },
+                        }}
+                      >
                         <TableCell>
-                          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-                            <Avatar src={product.image_path || undefined}
-                              sx={{ width: 36, height: 36, borderRadius: "8px", bgcolor: "rgba(59, 130, 246, 0.12)" }}>
-                              <Inventory2 sx={{ fontSize: 18, color: theme.palette.primary.main }} />
+                          <Box
+                            sx={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 1.5,
+                            }}
+                          >
+                            <Avatar
+                              src={product.image_path || undefined}
+                              sx={{
+                                width: 36,
+                                height: 36,
+                                borderRadius: "8px",
+                                bgcolor: "rgba(59, 130, 246, 0.12)",
+                              }}
+                            >
+                              <Inventory2
+                                sx={{
+                                  fontSize: 18,
+                                  color: theme.palette.primary.main,
+                                }}
+                              />
                             </Avatar>
                             <Box>
-                              <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.2 }}>
+                              <Typography
+                                variant="body2"
+                                component="div"
+                                sx={{ fontWeight: 600, lineHeight: 1.2 }}
+                              >
                                 {product.name}
                                 {product.sale_unit === "weight" && (
-                                  <Chip label="kg" size="small" sx={{ ml: 0.5, height: 16, fontSize: "0.5rem", bgcolor: "rgba(59,130,246,0.12)", color: theme.palette.primary.main, fontWeight: 700 }} />
+                                  <Chip
+                                    label="kg"
+                                    size="small"
+                                    sx={{
+                                      ml: 0.5,
+                                      height: 16,
+                                      fontSize: "0.5rem",
+                                      bgcolor: "rgba(59,130,246,0.12)",
+                                      color: theme.palette.primary.main,
+                                      fontWeight: 700,
+                                    }}
+                                  />
                                 )}
                                 {product.sale_unit === "box" && (
-                                  <Chip label="caja" size="small" sx={{ ml: 0.5, height: 16, fontSize: "0.5rem", bgcolor: "rgba(16,185,129,0.12)", color: theme.palette.success.main, fontWeight: 700 }} />
+                                  <Chip
+                                    label="caja"
+                                    size="small"
+                                    sx={{
+                                      ml: 0.5,
+                                      height: 16,
+                                      fontSize: "0.5rem",
+                                      bgcolor: "rgba(16,185,129,0.12)",
+                                      color: theme.palette.success.main,
+                                      fontWeight: 700,
+                                    }}
+                                  />
                                 )}
                                 {product.discount_percent > 0 && (
-                                  <Chip label={`-${product.discount_percent}%`} color="error" size="small"
-                                    sx={{ ml: 0.5, height: 18, fontSize: "0.6rem" }} />
+                                  <Chip
+                                    label={`-${product.discount_percent}%`}
+                                    color="error"
+                                    size="small"
+                                    sx={{
+                                      ml: 0.5,
+                                      height: 18,
+                                      fontSize: "0.6rem",
+                                    }}
+                                  />
                                 )}
                               </Typography>
-                              <Typography variant="caption" color="textSecondary">{product.brand || ""}</Typography>
+                              <Typography
+                                variant="caption"
+                                color="textSecondary"
+                              >
+                                {product.brand || ""}
+                              </Typography>
                             </Box>
                           </Box>
                         </TableCell>
                         <TableCell align="right">
                           {product.discount_percent > 0 ? (
                             <Box>
-                              <Typography variant="caption" sx={{ textDecoration: "line-through", color: "text.secondary", display: "block" }}>
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  textDecoration: "line-through",
+                                  color: "text.secondary",
+                                  display: "block",
+                                }}
+                              >
                                 ${product.price.toFixed(2)}
                               </Typography>
-                              <Typography variant="body2" sx={{ fontWeight: 700, color: theme.palette.error.light }}>
+                              <Typography
+                                variant="body2"
+                                sx={{
+                                  fontWeight: 700,
+                                  color: theme.palette.error.light,
+                                }}
+                              >
                                 ${finalPrice.toFixed(2)}
                               </Typography>
                             </Box>
                           ) : (
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            <Typography
+                              variant="body2"
+                              sx={{ fontWeight: 600 }}
+                            >
                               ${boxPriceDisplay(product).toFixed(2)}
                             </Typography>
                           )}
@@ -341,27 +667,81 @@ const Inventory = () => {
                           </Typography>
                           <LinearProgress
                             variant="determinate"
-                            value={Math.min((product.stock / ((product.min_stock || 5) * 2)) * 100, 100)}
+                            value={Math.min(
+                              (product.stock / ((product.min_stock || 5) * 2)) *
+                                100,
+                              100,
+                            )}
                             sx={{
                               mt: 0.5,
-                              height: 4,
+                              height: 8,
                               borderRadius: 2,
-                              bgcolor: isDark ? "rgba(148,163,184,0.12)" : "rgba(148,163,184,0.15)",
+                              bgcolor: isDark
+                                ? "rgba(148,163,184,0.12)"
+                                : "rgba(148,163,184,0.15)",
                               "& .MuiLinearProgress-bar": {
-                                bgcolor: stockStatus.color === "error" ? "#ef4444" : stockStatus.color === "warning" ? "#f59e0b" : "#10b981",
+                                bgcolor:
+                                  stockStatus.color === "error"
+                                    ? "#ef4444"
+                                    : stockStatus.color === "warning"
+                                      ? "#f59e0b"
+                                      : "#10b981",
                               },
                             }}
                           />
                         </TableCell>
                         <TableCell align="center">
-                          <Chip label={stockStatus.label} color={stockStatus.color} size="small" variant="outlined" sx={{ height: 20, fontSize: "0.65rem" }} />
+                          <Chip
+                            label={stockStatus.label}
+                            color={stockStatus.color}
+                            size="small"
+                            variant="outlined"
+                            sx={{ height: 20, fontSize: "0.65rem" }}
+                          />
                         </TableCell>
                         <TableCell align="center">
-                          <Stack direction="row" spacing={0.3} justifyContent="center">
-                            <Tooltip title="Ver"><IconButton size="small" color="primary" onClick={() => handleViewDetails(product)}><Visibility fontSize="small" /></IconButton></Tooltip>
-                            <Tooltip title="Editar"><IconButton size="small" onClick={() => handleEditProduct(product)}><Edit fontSize="small" sx={{ color: theme.palette.secondary.main }} /></IconButton></Tooltip>
-                            <Tooltip title="Agregar Stock"><IconButton size="small" color="success" onClick={() => handleAddStock(product)}><Add fontSize="small" /></IconButton></Tooltip>
-                            <Tooltip title="Eliminar"><IconButton size="small" color="error" onClick={() => handleDeleteProduct(product)}><Delete fontSize="small" /></IconButton></Tooltip>
+                          <Stack
+                            direction="row"
+                            spacing={0.3}
+                            justifyContent="center"
+                          >
+                            <Tooltip title="Ver">
+                              <IconButton
+                                size="small"
+                                onClick={() => handleViewDetails(product)}
+                                sx={{ p: 0.5, color: isDark ? "#e2e8f0" : "#0f172a", "&:hover": { bgcolor: isDark ? "rgba(255,255,255,0.08)" : "rgba(15,23,42,0.08)" } }}
+                              >
+                                <VisibilityOutlined fontSize="16px" />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Editar">
+                              <IconButton
+                                size="small"
+                                onClick={() => handleEditProduct(product)}
+                                sx={{ p: 0.5, color: isDark ? "#e2e8f0" : "#0f172a", "&:hover": { bgcolor: isDark ? "rgba(255,255,255,0.08)" : "rgba(15,23,42,0.08)" } }}
+                              >
+                                <EditOutlined fontSize="16px" />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Agregar Stock">
+                              <IconButton
+                                size="small"
+                                onClick={() => handleAddStock(product)}
+                                sx={{ p: 0.5, color: isDark ? "#e2e8f0" : "#0f172a", "&:hover": { bgcolor: isDark ? "rgba(255,255,255,0.08)" : "rgba(15,23,42,0.08)" } }}
+                              >
+                                <Add fontSize="16px" />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Eliminar">
+                              <IconButton
+                                size="small"
+                                color="error"
+                                onClick={() => handleDeleteProduct(product)}
+                                sx={{ p: 0.5 }}
+                              >
+                                <DeleteOutlined fontSize="16px" />
+                              </IconButton>
+                            </Tooltip>
                           </Stack>
                         </TableCell>
                       </TableRow>
@@ -371,12 +751,23 @@ const Inventory = () => {
                     <TableRow>
                       <TableCell colSpan={5} align="center">
                         <Box sx={{ py: 6, textAlign: "center" }}>
-                          <Store sx={{ fontSize: 48, color: "text.secondary", mb: 1 }} />
-                          <Typography variant="body1" color="textSecondary" sx={{ mb: 0.5 }}>
+                          <Store
+                            sx={{
+                              fontSize: 48,
+                              color: "text.secondary",
+                              mb: 1,
+                            }}
+                          />
+                          <Typography
+                            variant="body1"
+                            color="textSecondary"
+                            sx={{ mb: 0.5 }}
+                          >
                             No hay productos registrados
                           </Typography>
                           <Typography variant="caption" color="textSecondary">
-                            Agrega tu primer producto usando el botón "Añadir Producto"
+                            Agrega tu primer producto usando el botón "Añadir
+                            Producto"
                           </Typography>
                         </Box>
                       </TableCell>
@@ -385,171 +776,343 @@ const Inventory = () => {
                 </TableBody>
               </Table>
             </TableContainer>
-            <TablePagination rowsPerPageOptions={[5, 10, 25, 50]} component="div" count={total}
-              rowsPerPage={rowsPerPage} page={page} onPageChange={(e, p) => setPage(p)}
-              onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0); }}
-              labelRowsPerPage="Filas:" labelDisplayedRows={({ from, to, count }) => `${from}-${to} de ${count}`} />
+            <TablePagination
+              rowsPerPageOptions={[5, 10, 25, 50]}
+              component="div"
+              count={total}
+              rowsPerPage={rowsPerPage}
+              page={page}
+              onPageChange={(e, p) => setPage(p)}
+              onRowsPerPageChange={(e) => {
+                setRowsPerPage(parseInt(e.target.value, 10));
+                setPage(0);
+              }}
+              labelRowsPerPage="Filas:"
+              labelDisplayedRows={({ from, to, count }) =>
+                `${from}-${to} de ${count}`
+              }
+            />
           </Card>
         </Fade>
       )}
 
-      <AddProductModal open={isModalOpen} onClose={() => setIsModalOpen(false)} onProductAdded={handleProductAdded} />
-      <AddProductModal open={editModalOpen} onClose={() => { setEditModalOpen(false); setSelectedProduct(null); }} onProductAdded={handleProductAdded} editProduct={selectedProduct} />
+      <AddProductModal
+        open={isModalOpen}
+        onClose={() => {
+          setIsModalOpen(false);
+          setInitialBarcode("");
+        }}
+        onProductAdded={() => {
+          handleProductAdded();
+          setInitialBarcode("");
+        }}
+        initialBarcode={initialBarcode}
+      />
+      <AddProductModal
+        open={editModalOpen}
+        onClose={() => {
+          setEditModalOpen(false);
+          setSelectedProduct(null);
+        }}
+        onProductAdded={handleProductAdded}
+        editProduct={selectedProduct}
+      />
 
-      <Dialog open={viewDetailsOpen} onClose={() => setViewDetailsOpen(false)} maxWidth="sm" fullWidth
-        PaperProps={{ sx: { borderRadius: "20px" } }}>
-        <DialogTitle sx={{ pb: 1 }}>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-            <Avatar src={selectedProduct?.image_path || undefined} variant="rounded"
-              sx={{ width: 56, height: 56, bgcolor: "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)" }}>
-              <Inventory2 sx={{ fontSize: 28, color: "white" }} />
-            </Avatar>
-            <Box>
-              <Typography variant="h5" sx={{ fontWeight: 700, fontSize: "1.2rem" }}>{selectedProduct?.name}</Typography>
-              <Typography variant="body2" color="textSecondary">{selectedProduct?.brand || "Sin marca"}</Typography>
-            </Box>
-          </Box>
-        </DialogTitle>
-        <DialogContent>
-          {selectedProduct && (
-            <Stack spacing={2} sx={{ pt: 1 }}>
-              <Card sx={{ p: 2, background: isDark ? "rgba(59, 130, 246, 0.06)" : "rgba(37, 99, 235, 0.03)", border: `1px solid ${isDark ? "rgba(59, 130, 246, 0.1)" : "rgba(37, 99, 235, 0.08)"}`, borderRadius: "12px" }}>
-                <Grid container spacing={2}>
-                  <Grid item xs={6}>
-                    <Box sx={{ textAlign: "center", p: 1 }}>
-                      <AttachMoney sx={{ fontSize: 24, color: theme.palette.primary.main, mb: 0.5 }} />
-                      {selectedProduct.sale_unit === "box" && selectedProduct.box_qty > 0 && selectedProduct.stock >= selectedProduct.box_qty ? (
-                        <>
-                          <Typography variant="h5" sx={{ fontWeight: 800, color: theme.palette.primary.main }}>
-                            ${(selectedProduct.box_price || 0).toFixed(2)}
-                          </Typography>
-                          <Typography variant="caption" color="textSecondary">Precio Venta (caja)</Typography>
-                          <Typography variant="caption" sx={{ display: "block", color: "text.secondary", mt: 0.5 }}>
-                            Pieza: ${(selectedProduct.price || 0).toFixed(2)}
-                          </Typography>
-                        </>
-                      ) : (
-                        <>
-                          <Typography variant="h5" sx={{ fontWeight: 800, color: theme.palette.primary.main }}>
-                            ${selectedProduct.discount_percent > 0 ? calcDiscountedPrice(selectedProduct.price, selectedProduct.discount_percent).toFixed(2) : selectedProduct.price.toFixed(2)}
-                          </Typography>
-                          <Typography variant="caption" color="textSecondary">Precio {selectedProduct.discount_percent > 0 ? "Final" : "Venta"}</Typography>
-                          {selectedProduct.discount_percent > 0 && (
-                            <Typography variant="caption" sx={{ textDecoration: "line-through", color: "text.secondary", display: "block" }}>
-                              ${selectedProduct.price.toFixed(2)}
-                            </Typography>
-                          )}
-                        </>
-                      )}
-                    </Box>
-                  </Grid>
-                  <Grid item xs={6}>
-                    <Box sx={{ textAlign: "center", p: 1 }}>
-                      <Inventory2 sx={{ fontSize: 24, color: selectedProduct.stock === 0 ? theme.palette.error.main : selectedProduct.stock <= (selectedProduct.min_stock || 5) ? theme.palette.warning.main : theme.palette.success.main, mb: 0.5 }} />
-                      <Typography variant="h5" sx={{ fontWeight: 800, color: selectedProduct.stock === 0 ? theme.palette.error.main : selectedProduct.stock <= (selectedProduct.min_stock || 5) ? theme.palette.warning.main : theme.palette.success.main }}>
-                        {selectedProduct.sale_unit === "box" && selectedProduct.box_qty > 0
-                          ? stockDisplay(selectedProduct)
-                          : selectedProduct.stock}
-                      </Typography>
-                      <Typography variant="caption" color="textSecondary">Stock Actual</Typography>
-                    </Box>
-                  </Grid>
-                </Grid>
-              </Card>
-
-              <Stack direction="row" spacing={1} justifyContent="center" flexWrap="wrap" useFlexGap>
-                <Chip label={`Código: ${selectedProduct.barcode}`} variant="outlined" size="small" sx={{ fontWeight: 500 }} />
+      <Dialog
+        open={viewDetailsOpen}
+        onClose={() => setViewDetailsOpen(false)}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: "20px", overflow: "hidden", bgcolor: isDark ? "#16181d" : "#f4f4f5", maxHeight: "90vh" } }}
+      >
+        {selectedProduct && (
+          <Box sx={{ display: "flex", flexDirection: { xs: "column", md: "row" } }}>
+            {/* ── Product Visual Area (40%) ── */}
+            <Box sx={{
+              width: { xs: "100%", md: "40%" },
+              bgcolor: isDark ? "rgba(255,255,255,0.03)" : "#ececee",
+              borderRight: { md: "1px solid" }, borderBottom: { xs: "1px solid", md: "none" },
+              borderColor: "divider",
+              p: { xs: 4, md: 5 },
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+              position: "relative",
+            }}>
+              <Box sx={{ position: "absolute", top: 20, left: 20 }}>
                 <Chip
-                  icon={getStockStatus(selectedProduct.stock, selectedProduct.min_stock).color === "error" ? <TrendingDown /> : getStockStatus(selectedProduct.stock, selectedProduct.min_stock).color === "warning" ? <TrendingDown /> : <TrendingUp />}
+                  size="small"
                   label={getStockStatus(selectedProduct.stock, selectedProduct.min_stock).label}
-                  color={getStockStatus(selectedProduct.stock, selectedProduct.min_stock).color}
-                  variant="filled" size="small" sx={{ fontWeight: 700 }} />
-              </Stack>
+                  sx={{
+                    fontWeight: 700, fontSize: "0.62rem", letterSpacing: "0.06em", textTransform: "uppercase", height: 24,
+                    bgcolor: getStockStatus(selectedProduct.stock, selectedProduct.min_stock).color === "success"
+                      ? (isDark ? "rgba(16,185,129,0.15)" : "#dcfce7")
+                      : getStockStatus(selectedProduct.stock, selectedProduct.min_stock).color === "warning"
+                        ? (isDark ? "rgba(245,158,11,0.15)" : "#fef3c7")
+                        : (isDark ? "rgba(239,68,68,0.15)" : "#fee2e2"),
+                    color: getStockStatus(selectedProduct.stock, selectedProduct.min_stock).color === "success"
+                      ? "#059669"
+                      : getStockStatus(selectedProduct.stock, selectedProduct.min_stock).color === "warning"
+                        ? "#b45309"
+                        : "#dc2626",
+                  }}
+                />
+              </Box>
+
+              <Typography variant="h4" sx={{ fontWeight: 800, fontSize: "1.6rem", lineHeight: 1.15, textAlign: "center", mb: 3, wordBreak: "break-word" }}>
+                {selectedProduct.name}
+              </Typography>
+
+              <Box sx={{
+                width: 140, height: 140, borderRadius: "28px",
+                bgcolor: isDark ? "rgba(59,130,246,0.08)" : "rgba(37,99,235,0.05)",
+                border: "1px solid", borderColor: "divider",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                <Inventory2 sx={{ fontSize: 64, color: isDark ? "#64748b" : "#94a3b8" }} />
+              </Box>
+
+              <Box sx={{ mt: 5, width: "100%" }}>
+                <Box sx={{ bgcolor: "background.paper", p: 2, borderRadius: "12px", border: "1px solid", borderColor: "divider", textAlign: "center" }}>
+                  <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.55rem" }}>Stock Actual</Typography>
+                  <Typography variant="h4" sx={{ fontWeight: 800, color: "primary.main", mt: 0.5, fontSize: "1.7rem" }}>
+                    {selectedProduct.sale_unit === "box" && selectedProduct.box_qty > 0
+                      ? stockDisplay(selectedProduct)
+                      : selectedProduct.stock}
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.6rem" }}>{stockUnit(selectedProduct)}</Typography>
+                </Box>
+              </Box>
+            </Box>
+
+            {/* ── Product Details Area (60%) ── */}
+            <Box sx={{
+              flex: 1, minWidth: 0, p: { xs: 3, md: 5 },
+              bgcolor: "background.paper",
+              display: "flex", flexDirection: "column",
+              overflowY: "auto",
+            }}>
+              <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", mb: 4 }}>
+                <Box sx={{ minWidth: 0, pr: 2 }}>
+                  <Typography variant="h5" sx={{ fontWeight: 800, fontSize: "1.4rem", lineHeight: 1.2, wordBreak: "break-word", mb: 0.75, textAlign: "center" }}>
+                    {selectedProduct.barcode || "Sin código"}
+                  </Typography>
+                  <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+                    <Typography variant="body2" sx={{ fontWeight: 600, color: "primary.main", textTransform: "uppercase", letterSpacing: "0.1em", fontSize: "0.7rem" }}>
+                      {selectedProduct.brand || "Sin marca"}
+                    </Typography>
+                    <Box component="span" sx={{ color: "text.secondary", fontSize: "0.7rem" }}>•</Box>
+                    <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.75rem" }}>
+                      {selectedProduct.category_name || "Sin categoría"}
+                    </Typography>
+                  </Stack>
+                </Box>
+                <IconButton size="small" onClick={() => setViewDetailsOpen(false)}
+                  sx={{ color: "text.secondary", "&:hover": { bgcolor: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.05)" } }}>
+                  <Close sx={{ fontSize: 22 }} />
+                </IconButton>
+              </Box>
 
               {selectedProduct.discount_percent > 0 && (
-                <Box sx={{ p: 1.5, borderRadius: 2, background: isDark ? "rgba(239, 68, 68, 0.1)" : "rgba(239, 68, 68, 0.06)", border: `1px solid ${isDark ? "rgba(239, 68, 68, 0.2)" : "rgba(239, 68, 68, 0.15)"}`, textAlign: "center" }}>
-                  <Typography variant="body2" color="error" sx={{ fontWeight: 700 }}>
+                <Box sx={{
+                  mb: 3, px: 2, py: 1.5, borderRadius: "10px", textAlign: "center",
+                  bgcolor: isDark ? "rgba(239,68,68,0.1)" : "rgba(239,68,68,0.06)",
+                  border: "1px solid", borderColor: isDark ? "rgba(239,68,68,0.2)" : "rgba(239,68,68,0.15)",
+                }}>
+                  <Typography variant="body2" color="error" sx={{ fontWeight: 700, fontSize: "0.8rem" }}>
                     REBAJA -{selectedProduct.discount_percent}% — Ahorras ${(selectedProduct.price - calcDiscountedPrice(selectedProduct.price, selectedProduct.discount_percent)).toFixed(2)}
                   </Typography>
                 </Box>
               )}
 
-              <Divider />
-
-              <Grid container spacing={2}>
-                <Grid item xs={6}>
-                  <Typography variant="caption" color="textSecondary">Precio de costo</Typography>
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>${(selectedProduct.cost_price || 0).toFixed(2)}</Typography>
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="caption" color="textSecondary">Stock mínimo</Typography>
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>{selectedProduct.min_stock || 5}</Typography>
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="caption" color="textSecondary">Margen de ganancia</Typography>
-                  <Typography variant="body2" sx={{ fontWeight: 600, color: theme.palette.success.main }}>
-                    {selectedProduct.cost_price > 0 ? `${((selectedProduct.price - selectedProduct.cost_price) / selectedProduct.cost_price * 100).toFixed(0)}%` : "—"}
+              {/* ── Pricing Grid ── */}
+              <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(3, 1fr)" }, gap: { xs: 2, sm: 3 }, borderTop: "1px solid", borderBottom: "1px solid", borderColor: "divider", py: 3.5, mb: 4 }}>
+                <Box>
+                  <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 600, mb: 0.5, display: "block" }}>Precio Venta</Typography>
+                  {selectedProduct.sale_unit === "box" && selectedProduct.box_qty > 0 && selectedProduct.stock >= selectedProduct.box_qty ? (
+                    <>
+                      <Typography variant="h5" sx={{ fontWeight: 800, color: "primary.main", fontSize: "1.35rem" }}>
+                        ${(selectedProduct.box_price || 0).toFixed(2)}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: "text.secondary" }}>caja · Pieza: ${(selectedProduct.price || 0).toFixed(2)}</Typography>
+                    </>
+                  ) : (
+                    <>
+                      <Typography variant="h5" sx={{ fontWeight: 800, color: "primary.main", fontSize: "1.35rem" }}>
+                        ${selectedProduct.discount_percent > 0
+                          ? calcDiscountedPrice(selectedProduct.price, selectedProduct.discount_percent).toFixed(2)
+                          : selectedProduct.price.toFixed(2)}
+                      </Typography>
+                      {selectedProduct.discount_percent > 0 && (
+                        <Typography variant="caption" sx={{ color: "text.secondary", textDecoration: "line-through" }}>
+                          ${selectedProduct.price.toFixed(2)}
+                        </Typography>
+                      )}
+                    </>
+                  )}
+                </Box>
+                <Box>
+                  <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 600, mb: 0.5, display: "block" }}>Precio Costo</Typography>
+                  <Typography variant="h6" sx={{ fontWeight: 700, fontSize: "1.05rem", color: "text.secondary" }}>
+                    ${(selectedProduct.cost_price || 0).toFixed(2)}
                   </Typography>
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="caption" color="textSecondary">Proveedor</Typography>
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>{selectedProduct?.supplier_name || "—"}</Typography>
-                </Grid>
-              </Grid>
-            </Stack>
-          )}
-        </DialogContent>
-        <DialogActions sx={{ p: 2 }}>
-          <CancelButton onClick={() => setViewDetailsOpen(false)} fullWidth>Cerrar</CancelButton>
-        </DialogActions>
+                </Box>
+                <Box sx={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
+                  <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 600, mb: 0.5 }}>Margen de Ganancia</Typography>
+                  <Box sx={{
+                    display: "inline-flex", alignItems: "center", gap: 0.75, width: "fit-content",
+                    px: 1.5, py: 0.75, borderRadius: "10px",
+                    bgcolor: isDark ? "rgba(16,185,129,0.12)" : "#d1fae5",
+                    color: "#059669", fontWeight: 700, fontSize: "0.8rem",
+                  }}>
+                    <TrendingUp sx={{ fontSize: 15 }} />
+                    {selectedProduct.cost_price > 0
+                      ? `${(((selectedProduct.price - selectedProduct.cost_price) / selectedProduct.cost_price) * 100).toFixed(0)}%`
+                      : "—"}
+                  </Box>
+                </Box>
+              </Box>
+
+              {/* ── Supplier Info ── */}
+              <Box sx={{
+                bgcolor: isDark ? "rgba(255,255,255,0.04)" : "#f4f4f5",
+                p: 2.5, borderRadius: "14px", border: "1px solid", borderColor: "divider",
+                display: "flex", alignItems: "flex-start", gap: 2,
+              }}>
+                <Box sx={{
+                  width: 40, height: 40, borderRadius: "10px", flexShrink: 0,
+                  bgcolor: "background.paper", border: "1px solid", borderColor: "divider",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}>
+                  <Store sx={{ fontSize: 20, color: "primary.main" }} />
+                </Box>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800, color: "primary.main", mb: 1.5 }}>Información del Proveedor</Typography>
+                  <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 1.5 }}>
+                    <Box>
+                      <Typography variant="caption" sx={{ color: "text.secondary", textTransform: "uppercase", fontWeight: 700, fontSize: "0.55rem", letterSpacing: "0.05em", display: "block" }}>Nombre</Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 600, fontSize: "0.82rem" }}>{selectedProduct.supplier_name || "—"}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" sx={{ color: "text.secondary", textTransform: "uppercase", fontWeight: 700, fontSize: "0.55rem", letterSpacing: "0.05em", display: "block" }}>Categoría</Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 600, fontSize: "0.82rem" }}>{selectedProduct.category_name || "—"}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" sx={{ color: "text.secondary", textTransform: "uppercase", fontWeight: 700, fontSize: "0.55rem", letterSpacing: "0.05em", display: "block" }}>Stock Mínimo</Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 600, fontSize: "0.82rem" }}>{selectedProduct.min_stock || 5} {stockUnit(selectedProduct)}</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="caption" sx={{ color: "text.secondary", textTransform: "uppercase", fontWeight: 700, fontSize: "0.55rem", letterSpacing: "0.05em", display: "block" }}>Costo por Pieza</Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 600, fontSize: "0.82rem" }}>${(selectedProduct.cost_price || 0).toFixed(2)}</Typography>
+                    </Box>
+                  </Box>
+                </Box>
+              </Box>
+            </Box>
+          </Box>
+        )}
       </Dialog>
 
-      <Dialog open={deleteConfirmOpen} onClose={() => setDeleteConfirmOpen(false)}>
+
+      <Dialog
+        open={deleteConfirmOpen}
+        onClose={() => setDeleteConfirmOpen(false)}
+      >
         <DialogTitle>Confirmar Eliminación</DialogTitle>
         <DialogContent>
-          <DialogContentText>¿Eliminar "{selectedProduct?.name}"? Esta acción no se puede deshacer.</DialogContentText>
+          <DialogContentText>
+            ¿Eliminar "{selectedProduct?.name}"? Esta acción no se puede
+            deshacer.
+          </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <CancelButton onClick={() => setDeleteConfirmOpen(false)}>Cancelar</CancelButton>
-          <Button onClick={confirmDelete} color="error" variant="contained">Eliminar</Button>
+          <CancelButton onClick={() => setDeleteConfirmOpen(false)}>
+            Cancelar
+          </CancelButton>
+          <Button onClick={confirmDelete} color="error" variant="contained">
+            Eliminar
+          </Button>
         </DialogActions>
       </Dialog>
 
-      <Dialog open={stockModalOpen} onClose={() => setStockModalOpen(false)} maxWidth="xs" fullWidth>
+      <Dialog
+        open={stockModalOpen}
+        onClose={() => setStockModalOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
         <DialogTitle>
           <Stack direction="row" spacing={1} alignItems="center">
             <Warehouse color="success" />
-            <Typography variant="h6" sx={{ fontWeight: 700 }}>Agregar Stock</Typography>
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
+              Agregar Stock
+            </Typography>
           </Stack>
         </DialogTitle>
         <DialogContent>
           {selectedProduct && (
             <Stack spacing={2} sx={{ mt: 1 }}>
-              <Typography variant="body1" sx={{ fontWeight: 600 }}>{selectedProduct.name}</Typography>
+              <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                {selectedProduct.name}
+              </Typography>
               <Typography variant="body2" color="textSecondary">
                 Stock actual: <strong>{stockDisplay(selectedProduct)}</strong>
-                {selectedProduct.sale_unit === "weight" && <span> — Precio kg: ${selectedProduct.price.toFixed(2)}</span>}
+                {selectedProduct.sale_unit === "weight" && (
+                  <span> — Precio kg: ${selectedProduct.price.toFixed(2)}</span>
+                )}
               </Typography>
-              <TextField label={selectedProduct.sale_unit === "box" ? "Cantidad (cajas)" : "Cantidad a agregar"} type="number" value={stockQuantity}
-                onChange={(e) => setStockQuantity(parseInt(e.target.value) || 0)} fullWidth autoFocus
-                inputProps={{ min: 1 }} />
-              <TextField label="Costo total de esta compra" type="number" value={stockCost}
+              <TextField
+                label={
+                  selectedProduct.sale_unit === "box"
+                    ? "Cantidad (cajas)"
+                    : "Cantidad a agregar"
+                }
+                type="number"
+                value={stockQuantity}
+                onChange={(e) =>
+                  setStockQuantity(parseInt(e.target.value) || 0)
+                }
+                fullWidth
+                autoFocus
+                inputProps={{ min: 1 }}
+              />
+              <TextField
+                label="Costo total de esta compra"
+                type="number"
+                value={stockCost}
                 onChange={(e) => setStockCost(e.target.value)}
-                InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">$</InputAdornment>
+                  ),
+                }}
                 inputProps={{ min: 0, step: 0.01 }}
-                helperText="Se registrará como egreso en la caja abierta" />
+                helperText={stockCost ? "Se registrará como egreso en la caja abierta" : `Si deja vacío: $${((selectedProduct?.cost_price || 0) * stockQuantity).toFixed(2)} (costo × cantidad)`}
+              />
             </Stack>
           )}
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
-          <CancelButton onClick={() => setStockModalOpen(false)}>Cancelar</CancelButton>
-          <Button onClick={confirmAddStock} variant="outlined" startIcon={<Add />} disabled={!stockQuantity || stockQuantity <= 0}
-            sx={{ borderColor: "success.main", color: "success.main", backgroundColor: "rgba(16,185,129,0.06)", "&:hover": { backgroundColor: "rgba(16,185,129,0.12)", borderColor: "success.main" } }}>
+          <CancelButton onClick={() => setStockModalOpen(false)}>
+            Cancelar
+          </CancelButton>
+          <Button
+            onClick={confirmAddStock}
+            variant="outlined"
+            startIcon={<Add />}
+            disabled={!stockQuantity || stockQuantity <= 0}
+            sx={{
+              borderColor: "success.main",
+              color: "success.main",
+              backgroundColor: "rgba(16,185,129,0.06)",
+              "&:hover": {
+                backgroundColor: "rgba(16,185,129,0.12)",
+                borderColor: "success.main",
+              },
+            }}
+          >
             Agregar Stock
           </Button>
         </DialogActions>
       </Dialog>
-
     </Box>
   );
 };

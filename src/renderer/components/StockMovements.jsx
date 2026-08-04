@@ -75,36 +75,36 @@ const StockMovements = () => {
       ) : (
         <Fade in={!loading} timeout={500}>
           <Stack direction={{ xs: "column", md: "row" }} spacing={2} sx={{ mb: 3 }}>
-            <Card sx={{ flex: 1, background: "linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(59, 130, 246, 0.15) 100%)", border: "2px solid rgba(59, 130, 246, 0.2)" }}>
+            <Card sx={{ flex: 1, bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none" }}>
               <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, py: 1.5, px: 2, "&:last-child": { pb: 1.5 } }}>
-                <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(59, 130, 246, 0.15)" }}>
+                <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(59, 130, 246, 0.12)" }}>
                   <CompareArrows sx={{ fontSize: 22, color: theme.palette.primary.main }} />
                 </Box>
                 <Box sx={{ minWidth: 0 }}>
                   <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.6rem", lineHeight: 1.2 }}>Total Movimientos</Typography>
-                  <Typography variant="h5" sx={{ fontWeight: 700, color: theme.palette.primary.main, fontSize: "1.25rem", lineHeight: 1.1 }}>{movements.length}</Typography>
+                  <Typography variant="h5" sx={{ fontWeight: 700, color: "text.primary", fontSize: "1.25rem", lineHeight: 1.1 }}>{movements.length}</Typography>
                 </Box>
               </CardContent>
             </Card>
-            <Card sx={{ flex: 1, background: "linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(16, 185, 129, 0.15) 100%)", border: "2px solid rgba(16, 185, 129, 0.2)" }}>
+            <Card sx={{ flex: 1, bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none" }}>
               <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, py: 1.5, px: 2, "&:last-child": { pb: 1.5 } }}>
-                <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(16, 185, 129, 0.15)" }}>
+                <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(16, 185, 129, 0.12)" }}>
                   <TrendingUp sx={{ fontSize: 22, color: theme.palette.success.main }} />
                 </Box>
                 <Box sx={{ minWidth: 0 }}>
                   <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.6rem", lineHeight: 1.2 }}>Unidades Entradas</Typography>
-                  <Typography variant="h5" sx={{ fontWeight: 700, color: theme.palette.success.main, fontSize: "1.25rem", lineHeight: 1.1 }}>{totalIn}</Typography>
+                  <Typography variant="h5" sx={{ fontWeight: 700, color: "text.primary", fontSize: "1.25rem", lineHeight: 1.1 }}>{totalIn}</Typography>
                 </Box>
               </CardContent>
             </Card>
-            <Card sx={{ flex: 1, background: "linear-gradient(135deg, rgba(239, 68, 68, 0.08) 0%, rgba(239, 68, 68, 0.15) 100%)", border: "2px solid rgba(239, 68, 68, 0.2)" }}>
+            <Card sx={{ flex: 1, bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none" }}>
               <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, py: 1.5, px: 2, "&:last-child": { pb: 1.5 } }}>
-                <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(239, 68, 68, 0.15)" }}>
+                <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(239, 68, 68, 0.12)" }}>
                   <TrendingDown sx={{ fontSize: 22, color: theme.palette.error.main }} />
                 </Box>
                 <Box sx={{ minWidth: 0 }}>
                   <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.6rem", lineHeight: 1.2 }}>Unidades Salidas</Typography>
-                  <Typography variant="h5" sx={{ fontWeight: 700, color: theme.palette.error.main, fontSize: "1.25rem", lineHeight: 1.1 }}>{totalOut}</Typography>
+                  <Typography variant="h5" sx={{ fontWeight: 700, color: "text.primary", fontSize: "1.25rem", lineHeight: 1.1 }}>{totalOut}</Typography>
                 </Box>
               </CardContent>
             </Card>

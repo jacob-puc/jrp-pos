@@ -6,7 +6,7 @@ import {
   Alert, InputAdornment, Avatar,
 } from "@mui/material";
 import {
-  Person, Add, Edit, Delete, Lock, CheckCircle, Cancel,
+  Person, Add, EditOutlined, DeleteOutlined, Lock, CheckCircle, Cancel,
 } from "@mui/icons-material";
 import CancelButton from "./CancelButton";
 import { TableSkeleton } from "./Skeletons";
@@ -127,10 +127,10 @@ const Cashiers = () => {
                   {c.role !== "admin" && (
                     <>
                       <IconButton size="small" onClick={() => handleOpen(c)} sx={{ mr: 0.5 }}>
-                        <Edit fontSize="small" />
+                        <EditOutlined fontSize="small" />
                       </IconButton>
                       <IconButton size="small" color="error" onClick={() => handleDelete(c.id)}>
-                        <Delete fontSize="small" />
+                        <DeleteOutlined fontSize="small" />
                       </IconButton>
                     </>
                   )}
@@ -143,6 +143,7 @@ const Cashiers = () => {
       )}
 
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="xs" fullWidth
+        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) handleSave(); }}
         PaperProps={{ sx: { borderRadius: "16px" } }}>
         <DialogTitle sx={{ fontWeight: 700 }}>
           {editing ? "Editar Cajero" : "Nuevo Cajero"}

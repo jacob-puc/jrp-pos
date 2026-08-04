@@ -1,21 +1,26 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { Link as RouterLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   AppBar,   Box, Drawer, List, ListItem, ListItemButton,
   ListItemIcon, ListItemText, Toolbar, Typography, IconButton,
-  useTheme, Divider, Chip, Stack, Tooltip,
+  useTheme, Divider, Chip, Stack, Tooltip, TextField, MenuItem, Alert,
   Dialog, DialogTitle, DialogContent, DialogActions, Button,
+  Badge, ListItemSecondaryAction,
 } from "@mui/material";
 import {
   PointOfSale, Inventory, Assessment, Menu, MenuOpen,
   Settings, Person, LocalShipping, Category,
   CompareArrows, AssessmentOutlined, Backup, QrCodeScanner,
-  DarkMode, LightMode, Logout, AccountBalance,
+  DarkMode, LightMode, Logout, AccountBalance, Scale,
+  CalendarMonth, CheckCircle,
 } from "@mui/icons-material";
 import CancelButton from "./CancelButton";
 import StoreSettingsDialog from "./StoreSettingsDialog";
 import { useThemeMode } from "../contexts/ThemeContext";
 import { useCashier } from "../contexts/CashierContext";
+import { formatMXTime } from "../utils/dateUtils";
+
+const TaskDialog = React.lazy(() => import("./TaskDialog"));
 
 const drawerWidth = 280;
 const miniDrawerWidth = 80;
@@ -34,21 +39,76 @@ const Layout = () => {
   const [serverRunning, setServerRunning] = useState(false);
   const { cashier, logout } = useCashier();
   const [registerOpen, setRegisterOpen] = useState(false);
+  const [registerNotice, setRegisterNotice] = useState(null);
+  const noticeShownRef = useRef(false);
+  const [scaleConnected, setScaleConnected] = useState(false);
+  const [scaleDialogOpen, setScaleDialogOpen] = useState(false);
+  const [scalePorts, setScalePorts] = useState([]);
+  const [scalePort, setScalePort] = useState(() => localStorage.getItem("scalePort") || "");
+  const [scaleBaud, setScaleBaud] = useState(() => localStorage.getItem("scaleBaud") || "115200");
+  const [scaleLoading, setScaleLoading] = useState(false);
+  const [scaleError, setScaleError] = useState("");
+  const [taskDialogOpen, setTaskDialogOpen] = useState(false);
+  const [todayTasksCount, setTodayTasksCount] = useState(0);
+  const [reminderDialog, setReminderDialog] = useState({ open: false, task: null });
+
+  const isVisibleRef = useRef(true);
+  useEffect(() => {
+    const handle = () => { isVisibleRef.current = !document.hidden; };
+    document.addEventListener("visibilitychange", handle);
+    return () => document.removeEventListener("visibilitychange", handle);
+  }, []);
 
   const isDarkMode = theme.palette.mode === "dark";
 
   const checkRegisterStatus = useCallback(async () => {
     try {
       const result = await window.api.invoke("get-cash-register-status", { cashierId: cashier?.id, role: cashier?.role });
-      setRegisterOpen(result.success && result.register?.status === "open");
+      const reg = result.success ? result.register : null;
+      setRegisterOpen(!!reg && reg.status === "open");
+      if (
+        reg &&
+        reg.status === "open" &&
+        cashier?.role !== "admin" &&
+        !noticeShownRef.current &&
+        String(reg.opened_by) !== String(cashier?.id) &&
+        String(reg.cashier_id) !== String(cashier?.id)
+      ) {
+        noticeShownRef.current = true;
+        setRegisterNotice({ opener_name: reg.opener_name, opened_at: reg.opened_at });
+      }
     } catch (e) { setRegisterOpen(false); }
   }, [cashier?.id, cashier?.role]);
 
   useEffect(() => {
     checkRegisterStatus();
-    const interval = setInterval(checkRegisterStatus, 10000);
+    const interval = setInterval(() => { if (isVisibleRef.current) checkRegisterStatus(); }, 10000);
     return () => clearInterval(interval);
   }, [checkRegisterStatus]);
+
+  useEffect(() => {
+    const checkScale = async () => {
+      if (!isVisibleRef.current) return;
+      try {
+        const status = await window.api.invoke("is-scale-connected");
+        setScaleConnected(status.connected);
+      } catch { setScaleConnected(false); }
+    };
+    checkScale();
+    const interval = setInterval(checkScale, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (scalePort && !scaleConnected) {
+      (async () => {
+        try {
+          const result = await window.api.invoke("connect-scale", scalePort, parseInt(scaleBaud));
+          setScaleConnected(result.success);
+        } catch { setScaleConnected(false); }
+      })();
+    }
+  }, [scalePort, scaleBaud]);
 
   useEffect(() => {
     const loadStoreSettings = async () => {
@@ -88,8 +148,25 @@ const Layout = () => {
   }, []);
 
   useEffect(() => {
-    const timer = setInterval(() => setClock(new Date()), 10000);
+    const timer = setInterval(() => { if (isVisibleRef.current) setClock(new Date()); }, 10000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const loadTodayTasks = async () => {
+      if (!isVisibleRef.current) return;
+      const result = await window.api.invoke("get-today-tasks");
+      if (result.success) setTodayTasksCount(result.tasks.length);
+    };
+    loadTodayTasks();
+    const interval = setInterval(loadTodayTasks, 30000);
+    const unsubReminder = window.api.on("task-reminder", (task) => {
+      setReminderDialog({ open: true, task });
+    });
+    return () => {
+      clearInterval(interval);
+      if (unsubReminder) unsubReminder();
+    };
   }, []);
 
   useEffect(() => {
@@ -161,6 +238,59 @@ const Layout = () => {
       }
     }
     return "Sistema de Ventas";
+  };
+
+  const handleOpenScaleDialog = async () => {
+    setScaleDialogOpen(true);
+    setScaleError("");
+    setScaleLoading(true);
+    try {
+      const ports = await window.api.invoke("list-serial-ports");
+      setScalePorts(ports);
+    } catch { setScalePorts([]); setScaleError("Error al buscar puertos"); }
+    setScaleLoading(false);
+  };
+
+  const handleRefreshPorts = async () => {
+    setScaleLoading(true);
+    setScaleError("");
+    try {
+      const ports = await window.api.invoke("list-serial-ports");
+      setScalePorts(ports);
+    } catch { setScalePorts([]); setScaleError("Error al buscar puertos"); }
+    setScaleLoading(false);
+  };
+
+  const handleConnectScale = async (portPath) => {
+    setScaleLoading(true);
+    setScaleError("");
+    localStorage.setItem("scalePort", portPath);
+    localStorage.setItem("scaleBaud", scaleBaud);
+    try {
+      const result = await window.api.invoke("connect-scale", portPath, parseInt(scaleBaud));
+      if (result.success) {
+        setScaleConnected(true);
+        setScalePort(portPath);
+        setScaleDialogOpen(false);
+      } else {
+        setScaleError(`No se pudo conectar: ${result.error}`);
+      }
+    } catch (e) { setScaleError("Error de conexion"); setScaleConnected(false); }
+    setScaleLoading(false);
+  };
+
+  const handleDisconnectScale = async () => {
+    try {
+      await window.api.invoke("disconnect-scale");
+      setScaleConnected(false);
+      setScalePort("");
+      localStorage.removeItem("scalePort");
+    } catch {}
+  };
+
+  const refreshTodayTasks = async () => {
+    const today = await window.api.invoke("get-today-tasks");
+    if (today.success) setTodayTasksCount(today.tasks.length);
   };
 
   const drawer = (
@@ -363,6 +493,24 @@ const Layout = () => {
                   }} />
                 </Box>
               </Tooltip>
+              <Tooltip title={scaleConnected ? "Bascula conectada - Click para gestionar" : "Sin bascula - Click para conectar"}>
+                <Box
+                  onClick={handleOpenScaleDialog}
+                  sx={{ display: "flex", alignItems: "center", gap: 0.5, px: 0.5, cursor: "pointer", "&:hover": { opacity: 0.8 } }}
+                >
+                  <Box sx={{
+                    width: 7, height: 7, borderRadius: "50%",
+                    bgcolor: scaleConnected ? "#10b981" : "#64748b",
+                    boxShadow: scaleConnected ? "0 0 6px rgba(16,185,129,0.6)" : "none",
+                  }} />
+                  <Typography variant="caption" sx={{
+                    color: scaleConnected ? "#10b981" : "#64748b",
+                    fontSize: "0.6rem", fontWeight: 600, lineHeight: 1,
+                  }}>
+                    BASCULA
+                  </Typography>
+                </Box>
+              </Tooltip>
               {registerOpen && (
                 <Tooltip title="Caja abierta">
                   <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, px: 0.5 }}>
@@ -382,6 +530,13 @@ const Layout = () => {
                   </Box>
                 </Tooltip>
               )}
+              <Tooltip title="Tareas del día">
+                <IconButton size="small" onClick={() => setTaskDialogOpen(true)} sx={{ color: "#94a3b8", "&:hover": { color: "#3b82f6" } }}>
+                  <Badge badgeContent={todayTasksCount} color="error" overlap="circular" sx={{ "& .MuiBadge-badge": { fontSize: "0.55rem", minWidth: 16, height: 16 } }}>
+                    <CalendarMonth sx={{ fontSize: 18 }} />
+                  </Badge>
+                </IconButton>
+              </Tooltip>
               <Box sx={{ textAlign: "center", minWidth: 75 }}>
                 <Typography variant="caption" sx={{ color: "#94a3b8", fontSize: "0.7rem", fontWeight: 500, lineHeight: 1.2, display: "block" }}>
                   {clock.toLocaleDateString("es-MX", {
@@ -507,7 +662,10 @@ const Layout = () => {
             {[
               { key: "F1", desc: "Mostrar esta ayuda" },
               { key: "F2", desc: "Agregar producto sin código (terminal)" },
+              { key: "F3", desc: "Disminuir cantidad (terminal)" },
+              { key: "F4", desc: "Aumentar cantidad (terminal)" },
               { key: "F8", desc: "Finalizar venta (terminal)" },
+              { key: "Ctrl + Q", desc: "Enfocar búsqueda (terminal)" },
               { key: "Ctrl + B", desc: "Colapsar menú lateral" },
               { key: "Ctrl + N", desc: "Nuevo producto en inventario" },
               { key: "Ctrl + P", desc: "Ir a proveedores / Nuevo proveedor" },
@@ -527,7 +685,178 @@ const Layout = () => {
         </DialogActions>
       </Dialog>
 
+      {/* ─── AVISO DE CAJA ABIERTA ───────────────────── */}
+      <Dialog
+        open={!!registerNotice}
+        onClose={() => setRegisterNotice(null)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            setRegisterNotice(null);
+          }
+        }}
+        maxWidth="xs"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: "16px" } }}
+      >
+        <DialogTitle sx={{ textAlign: "center", pt: 3 }}>
+          <Stack spacing={1.5} alignItems="center">
+            <Box
+              sx={{
+                width: 56,
+                height: 56,
+                borderRadius: "14px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "rgba(16, 185, 129, 0.12)",
+              }}
+            >
+              <AccountBalance sx={{ fontSize: 28, color: "#059669" }} />
+            </Box>
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
+              Caja Abierta
+            </Typography>
+          </Stack>
+        </DialogTitle>
+        <DialogContent sx={{ textAlign: "center" }}>
+          <Typography variant="body1" color="textSecondary">
+            {registerNotice
+              ? `Caja abierta por ${registerNotice.opener_name || "otro usuario"}${
+                  registerNotice.opened_at
+                    ? ` a las ${formatMXTime(registerNotice.opened_at)}`
+                    : ""
+                }`
+              : ""}
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ p: 2, pt: 0 }}>
+          <Button
+            variant="outlined"
+            fullWidth
+            onClick={() => setRegisterNotice(null)}
+            sx={{
+              border: "1px solid",
+              borderColor: "success.main",
+              color: "success.main",
+              backgroundColor: "rgba(16,185,129,0.06)",
+              "&:hover": {
+                backgroundColor: "rgba(16,185,129,0.12)",
+                borderColor: "success.main",
+              },
+            }}
+          >
+            Entendido
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <StoreSettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+      <Dialog open={scaleDialogOpen} onClose={() => setScaleDialogOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <Scale sx={{ color: scaleConnected ? "#10b981" : "#64748b" }} />
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>Bascula</Typography>
+          </Stack>
+        </DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ py: 1 }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: scaleConnected ? "#10b981" : "#ef4444", boxShadow: scaleConnected ? "0 0 8px rgba(16,185,129,0.6)" : "none" }} />
+              <Typography variant="body2" sx={{ fontWeight: 600, color: scaleConnected ? "#10b981" : "#ef4444" }}>
+                {scaleConnected ? "Conectada" : "Desconectada"}
+              </Typography>
+            </Box>
+            {scaleConnected ? (
+              <Typography variant="body2" color="textSecondary">
+                Puerto: <strong>{scalePort}</strong>
+              </Typography>
+            ) : (
+              <>
+                <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <Typography variant="body2" color="textSecondary">
+                    Selecciona el puerto COM:
+                  </Typography>
+                  <Button size="small" onClick={handleRefreshPorts} disabled={scaleLoading} sx={{ textTransform: "none", minWidth: 0 }}>
+                    Refrescar
+                  </Button>
+                </Box>
+                {scaleError && <Alert severity="error" sx={{ py: 0 }}>{scaleError}</Alert>}
+                {scaleLoading && <Typography variant="body2" color="textSecondary">Buscando puertos...</Typography>}
+                {!scaleLoading && scalePorts.length === 0 && (
+                  <Typography variant="body2" color="textSecondary" sx={{ fontStyle: "italic" }}>
+                    No se detectaron puertos. Verifica la conexion USB.
+                  </Typography>
+                )}
+                {!scaleLoading && scalePorts.length > 0 && (
+                  <Stack spacing={0.5}>
+                    {scalePorts.map((p) => (
+                      <Button key={p.path} variant={scalePort === p.path ? "contained" : "outlined"} fullWidth
+                        onClick={() => handleConnectScale(p.path)}
+                        disabled={scaleLoading}
+                        sx={{ justifyContent: "flex-start", textTransform: "none", fontWeight: 600 }}>
+                        {p.path}{p.manufacturer ? ` - ${p.manufacturer}` : ""}
+                      </Button>
+                    ))}
+                  </Stack>
+                )}
+                <TextField select label="Baud Rate" value={scaleBaud} size="small"
+                  onChange={(e) => setScaleBaud(e.target.value)}>
+                  <MenuItem value="9600">9600</MenuItem>
+                  <MenuItem value="19200">19200</MenuItem>
+                  <MenuItem value="38400">38400</MenuItem>
+                  <MenuItem value="57600">57600</MenuItem>
+                  <MenuItem value="115200">115200</MenuItem>
+                </TextField>
+              </>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          {scaleConnected && (
+            <Button onClick={handleDisconnectScale} color="error" sx={{ mr: "auto" }}>Desconectar</Button>
+          )}
+          <CancelButton onClick={() => setScaleDialogOpen(false)}>Cerrar</CancelButton>
+        </DialogActions>
+      </Dialog>
+
+      {/* ─── TAREAS (lazy) ─────────────────────────────── */}
+      <Suspense fallback={null}>
+        <TaskDialog open={taskDialogOpen} onClose={() => setTaskDialogOpen(false)} onTasksChange={refreshTodayTasks} />
+      </Suspense>
+
+      {/* ─── RECORDATORIO DE TAREA ───────────────────── */}
+      <Dialog open={reminderDialog.open} onClose={() => setReminderDialog({ open: false, task: null })} maxWidth="xs" fullWidth
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            setReminderDialog({ open: false, task: null });
+          }
+        }}
+        PaperProps={{ sx: { borderRadius: "16px" } }}>
+        <DialogTitle sx={{ textAlign: "center" }}>
+          <Stack spacing={1} alignItems="center">
+            <CalendarMonth sx={{ fontSize: 40, color: "#f59e0b" }} />
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>Recordatorio</Typography>
+          </Stack>
+        </DialogTitle>
+        <DialogContent sx={{ textAlign: "center" }}>
+          <Typography variant="body1" sx={{ fontWeight: 600, fontSize: "1.1rem", mb: 0.5 }}>
+            {reminderDialog.task?.title}
+          </Typography>
+          {reminderDialog.task?.task_time && (
+            <Typography variant="body2" color="textSecondary">
+              Hora: {reminderDialog.task.task_time}
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ justifyContent: "center", pb: 3 }}>
+          <Button variant="contained" onClick={() => setReminderDialog({ open: false, task: null })}>
+            OK
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

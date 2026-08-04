@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import {
   Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button,
-  Typography, Box, Stack, useTheme,
+  Typography, Box, Stack, useTheme, Switch, FormControlLabel, Divider,
 } from "@mui/material";
 import { Store, LocationOn, Save } from "@mui/icons-material";
 
@@ -11,6 +11,7 @@ const StoreSettingsDialog = ({ open, onClose }) => {
   const [formData, setFormData] = useState({ storeName: "", address: "" });
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [printTwoTickets, setPrintTwoTickets] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -21,6 +22,7 @@ const StoreSettingsDialog = ({ open, onClose }) => {
             storeName: settings.store_name || "",
             address: settings.store_address || "",
           });
+          setPrintTwoTickets(settings.print_two_tickets === "true");
         } catch (err) {
           console.error("Error loading settings:", err);
         }
@@ -44,6 +46,7 @@ const StoreSettingsDialog = ({ open, onClose }) => {
     try {
       await window.api.invoke("save-setting", "store_name", formData.storeName.trim());
       await window.api.invoke("save-setting", "store_address", formData.address.trim());
+      await window.api.invoke("save-setting", "print_two_tickets", printTwoTickets ? "true" : "false");
       window.dispatchEvent(new CustomEvent("storeSettingsUpdated", {
         detail: { storeName: formData.storeName.trim().toUpperCase(), address: formData.address.trim() },
       }));
@@ -100,6 +103,18 @@ const StoreSettingsDialog = ({ open, onClose }) => {
               sx: { borderRadius: "12px" },
               startAdornment: <LocationOn sx={{ color: "#64748b", mr: 1, fontSize: 18 }} />,
             }}
+          />
+          <Divider sx={{ my: 0.5 }} />
+          <FormControlLabel
+            control={<Switch checked={printTwoTickets} onChange={(e) => setPrintTwoTickets(e.target.checked)} />}
+            label={
+              <Box>
+                <Typography variant="body2" sx={{ fontWeight: 600 }}>Imprimir 2 tickets</Typography>
+                <Typography variant="caption" color="textSecondary">
+                  Para pagos con tarjeta y transferencia
+                </Typography>
+              </Box>
+            }
           />
         </Stack>
 

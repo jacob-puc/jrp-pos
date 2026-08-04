@@ -1,13 +1,13 @@
 {
   "expo": {
-    "name": "POS Móvil",
+    "name": "JRP POS Móvil",
     "slug": "pos-movil",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "backgroundColor": "#0a0e1a"
+      "backgroundColor": "#1e3a5f"
     },
     "ios": {
       "infoPlist": {
@@ -19,10 +19,13 @@
     "android": {
       "package": "com.tienda.posmovil",
       "adaptiveIcon": {
-        "backgroundColor": "#0a0e1a",
-        "foregroundImage": "./assets/android-icon-foreground.png"
+        "backgroundColor": "#1e3a5f",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "permissions": ["android.permission.CAMERA"]
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
     },
     "plugins": [
       "expo-secure-store",
@@ -30,6 +33,14 @@
         "expo-camera",
         {
           "cameraPermission": "Necesitamos acceso a la cámara para escanear códigos de barras"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
         }
       ]
     ]

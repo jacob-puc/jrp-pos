@@ -1,14 +1,21 @@
 import React, { useState, useEffect } from "react";
 import {
-  Box, Typography, Paper, Table, TableBody, TableCell, TableContainer,
-  TableHead, TableRow, Button, IconButton, Dialog, DialogTitle,
-  DialogContent, DialogActions, TextField, Stack, useTheme, Alert,
+  Box, Typography, Card, Grid, Button, IconButton, Dialog, DialogTitle,
+  DialogContent, DialogActions, TextField, Stack, Alert,
 } from "@mui/material";
 import {
-  Add, Edit, Delete, Category, CheckCircle,
+  Add, EditOutlined, DeleteOutlined, Category, CheckCircle,
 } from "@mui/icons-material";
 import CancelButton from "./CancelButton";
-import { TableSkeleton } from "./Skeletons";
+
+const catColors = [
+  { bg: "rgba(59,130,246,0.12)", icon: "#3b82f6", glow: "rgba(59,130,246,0.1)" },
+  { bg: "rgba(79,70,229,0.12)", icon: "#4f46e5", glow: "rgba(79,70,229,0.1)" },
+  { bg: "rgba(13,148,136,0.12)", icon: "#0d9488", glow: "rgba(13,148,136,0.1)" },
+  { bg: "rgba(5,150,105,0.12)", icon: "#059669", glow: "rgba(5,150,105,0.1)" },
+  { bg: "rgba(217,119,6,0.12)", icon: "#d97706", glow: "rgba(217,119,6,0.1)" },
+  { bg: "rgba(236,72,153,0.12)", icon: "#db2777", glow: "rgba(236,72,153,0.1)" },
+];
 
 const Categories = () => {
   const [categories, setCategories] = useState([]);
@@ -18,8 +25,6 @@ const Categories = () => {
   const [form, setForm] = useState({ name: "", description: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const theme = useTheme();
-  const isDark = theme.palette.mode === "dark";
 
   const load = async () => {
     setLoading(true);
@@ -83,59 +88,85 @@ const Categories = () => {
         </Button>
       </Stack>
 
-      {loading ? <TableSkeleton rows={4} columns={4} /> : (
-      <TableContainer component={Paper} sx={{
-        borderRadius: "14px",
-        border: `1px solid ${isDark ? "rgba(59,130,246,0.12)" : "rgba(37,99,235,0.1)"}`,
-      }}>
-        <Table>
-          <TableHead>
-            <TableRow>
-              <TableCell sx={{ fontWeight: 700 }}>Nombre</TableCell>
-              <TableCell sx={{ fontWeight: 700 }}>Descripción</TableCell>
-              <TableCell sx={{ fontWeight: 700 }}>Productos</TableCell>
-              <TableCell sx={{ fontWeight: 700 }} align="right">Acciones</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {categories.map((c) => (
-              <TableRow key={c.id} hover>
-                <TableCell>
-                  <Stack direction="row" spacing={1.5} alignItems="center">
-                    <Category sx={{ color: theme.palette.primary.main, fontSize: 20 }} />
-                    <Typography sx={{ fontWeight: 600 }}>{c.name}</Typography>
-                  </Stack>
-                </TableCell>
-                <TableCell sx={{ color: isDark ? "#94a3b8" : "#64748b" }}>
-                  {c.description || "—"}
-                </TableCell>
-                <TableCell>
-                  {c.product_count || 0}
-                </TableCell>
-                <TableCell align="right">
-                  <IconButton size="small" onClick={() => handleOpen(c)} sx={{ mr: 0.5 }}>
-                    <Edit fontSize="small" />
-                  </IconButton>
-                  <IconButton size="small" color="error" onClick={() => setDeleteConfirm(c)}>
-                    <Delete fontSize="small" />
-                  </IconButton>
-                </TableCell>
-              </TableRow>
-            ))}
-            {categories.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={4} align="center" sx={{ py: 4, color: isDark ? "#64748b" : "#94a3b8" }}>
-                  <Category sx={{ fontSize: 40, mb: 1, opacity: 0.3 }} />
-                  <Typography>No hay categorías registradas</Typography>
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </TableContainer>
+      {loading ? (
+        <Grid container spacing={2.5}>
+          {[0, 1, 2, 3].map((i) => (
+            <Grid item xs={12} sm={6} lg={4} xl={3} key={i}>
+              <Card sx={{ borderRadius: "12px", border: "1px solid", borderColor: "divider", boxShadow: "none", height: 230 }} />
+            </Grid>
+          ))}
+        </Grid>
+      ) : categories.length === 0 ? (
+        <Box sx={{ width: "100%", py: 10, textAlign: "center", color: "#94a3b8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+          <Category sx={{ fontSize: 48, mb: 1.5, opacity: 0.3 }} />
+          <Typography>No hay categorías registradas</Typography>
+        </Box>
+      ) : (
+        <Grid container spacing={2.5}>
+          {categories.map((c, i) => {
+            const col = catColors[i % catColors.length];
+            return (
+              <Grid item xs={12} sm={6} lg={4} xl={3} key={c.id}>
+                <Card sx={{
+                  borderRadius: "12px",
+                  border: "1px solid",
+                  borderColor: "divider",
+                  boxShadow: "none",
+                  position: "relative",
+                  overflow: "hidden",
+                  height: "100%",
+                  minHeight: 230,
+                  display: "flex",
+                  flexDirection: "column",
+                  transition: "box-shadow 0.2s ease",
+                  "&:hover": { boxShadow: "0 12px 24px rgba(0,0,0,0.12)" },
+                }}>
+                  <Box sx={{
+                    position: "absolute", top: 0, right: 0, width: 110, height: 110,
+                    mr: -3, mt: -3, borderRadius: "50%", bgcolor: col.glow,
+                    filter: "blur(2rem)", transition: "background-color 0.2s",
+                  }} />
+                  <Box sx={{ p: 3 }}>
+                    <Box sx={{
+                      width: 52, height: 52, borderRadius: "14px",
+                      bgcolor: col.bg, display: "flex", alignItems: "center",
+                      justifyContent: "center", mb: 2,
+                    }}>
+                      <Category sx={{ fontSize: 26, color: col.icon }} />
+                    </Box>
+                    <Typography sx={{ fontWeight: 700, fontSize: "1.05rem", mb: 0.5 }}>{c.name}</Typography>
+                    <Typography sx={{ color: "#64748b", fontSize: "0.85rem", mb: 2, minHeight: 40 }}>
+                      {c.description || "Sin descripción"}
+                    </Typography>
+                  </Box>
+                  <Box sx={{
+                    mt: "auto", pt: 1.5, pb: 1.5, px: 2.5,
+                    borderTop: "1px solid", borderColor: "divider",
+                  }}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                      <Typography sx={{ fontWeight: 600, fontSize: "0.8rem", color: "#64748b" }}>
+                        {c.product_count || 0} Productos
+                      </Typography>
+                      <Stack direction="row" spacing={0.5} alignItems="center">
+                        <IconButton size="small" onClick={() => handleOpen(c)}
+                          sx={{ color: "#1e3a8a", p: 1, "&:hover": { bgcolor: "#f5f5f4" } }}>
+                          <EditOutlined sx={{ fontSize: 18 }} />
+                        </IconButton>
+                        <IconButton size="small" color="error" onClick={() => setDeleteConfirm(c)} sx={{ p: 1 }}>
+                          <DeleteOutlined sx={{ fontSize: 18 }} />
+                        </IconButton>
+                      </Stack>
+                    </Stack>
+                  </Box>
+                </Card>
+              </Grid>
+            );
+          })}
+        </Grid>
       )}
 
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="xs" fullWidth
+        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) handleSave(); }}
         PaperProps={{ sx: { borderRadius: "16px" } }}>
         <DialogTitle sx={{ fontWeight: 700 }}>
           {editing ? "Editar Categoría" : "Nueva Categoría"}
@@ -145,7 +176,7 @@ const Categories = () => {
           <TextField fullWidth label="Nombre" value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
             sx={{ mb: 2, mt: 1 }} autoFocus
-            InputProps={{ startAdornment: <Category sx={{ mr: 1, fontSize: 20, color: "#234e8c" }} /> }} />
+            slotProps={{ input: { startAdornment: <Category sx={{ mr: 1, fontSize: 20, color: "#234e8c" }} /> } }} />
           <TextField fullWidth label="Descripción (opcional)" value={form.description}
             onChange={(e) => setForm({ ...form, description: e.target.value })}
             multiline rows={2} />

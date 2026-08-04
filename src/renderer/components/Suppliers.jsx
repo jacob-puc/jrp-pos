@@ -4,16 +4,18 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
   Box, Button, Table, TableBody, TableCell, TableContainer,
-  TableHead, TableRow, Typography, Card, CardContent, TextField,
+  TableHead, TableRow, Typography, TextField,
   InputAdornment, Stack, IconButton, Tooltip, useTheme, TablePagination,
   Dialog, DialogTitle, DialogContent, DialogActions, DialogContentText,
   Alert, Grid, Fade, CircularProgress, Chip,
 } from "@mui/material";
 import {
-  AddCircleOutline, Search, LocalShipping, Edit, Delete, Phone, Email, Person, LocationOn,
+  AddCircleOutline, Search, LocalShipping, EditOutlined, DeleteOutlined,
+  Phone, Email, Person, LocationOn, ChevronLeft, ChevronRight,
 } from "@mui/icons-material";
 import { TableSkeleton } from "./Skeletons";
 import CancelButton from "./CancelButton";
+import StepIndicator from "./StepIndicator";
 
 const supplierSchema = z.object({
   name: z.string().min(1, "El nombre es requerido"),
@@ -22,6 +24,8 @@ const supplierSchema = z.object({
   email: z.string().email("Email inválido").optional().or(z.literal("")),
   address: z.string().optional(),
 });
+
+const steps = ["Información", "Contacto"];
 
 const Suppliers = () => {
   const [suppliers, setSuppliers] = useState([]);
@@ -35,9 +39,11 @@ const Suppliers = () => {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  const [activeStep, setActiveStep] = useState(0);
   const theme = useTheme();
+  const isDark = theme.palette.mode === "dark";
 
-  const { control, handleSubmit, formState: { errors }, reset, setValue } = useForm({
+  const { control, handleSubmit, formState: { errors }, reset, trigger } = useForm({
     resolver: zodResolver(supplierSchema),
     defaultValues: { name: "", contact: "", phone: "", email: "", address: "" },
   });
@@ -72,6 +78,7 @@ const Suppliers = () => {
     setEditItem(null);
     reset({ name: "", contact: "", phone: "", email: "", address: "" });
     setSubmitError("");
+    setActiveStep(0);
     setModalOpen(true);
   };
 
@@ -79,8 +86,17 @@ const Suppliers = () => {
     setEditItem(s);
     reset({ name: s.name, contact: s.contact || "", phone: s.phone || "", email: s.email || "", address: s.address || "" });
     setSubmitError("");
+    setActiveStep(0);
     setModalOpen(true);
   };
+
+  const handleNext = async () => {
+    const fields = activeStep === 0 ? ["name"] : ["email"];
+    const isValid = await trigger(fields);
+    if (isValid) setActiveStep((prev) => prev + 1);
+  };
+
+  const handleBack = () => setActiveStep((prev) => prev - 1);
 
   const onSubmit = async (data) => {
     setIsSubmitting(true);
@@ -100,79 +116,150 @@ const Suppliers = () => {
     else { alert(result.error); setDeleteConfirm(null); }
   };
 
+  const renderStepContent = (step) => {
+    switch (step) {
+      case 0:
+        return (
+          <Fade in={activeStep === 0} timeout={300}>
+            <Box>
+              <Grid container spacing={2.5}>
+                <Grid size={{ xs: 12 }}>
+                  <Controller name="name" control={control} render={({ field }) => (
+                    <TextField {...field} label="Nombre del proveedor" fullWidth size="small" autoFocus
+                      error={!!errors.name} helperText={errors.name?.message}
+                      placeholder="Ej: Distribuidora Central S.A."
+                      slotProps={{ input: { startAdornment: <InputAdornment position="start"><LocalShipping sx={{ fontSize: 18, color: "#64748b" }} /></InputAdornment> } }} />
+                  )} />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <Controller name="address" control={control} render={({ field }) => (
+                    <TextField {...field} label="Dirección" fullWidth size="small" multiline rows={2}
+                      slotProps={{ input: { startAdornment: <InputAdornment position="start"><LocationOn sx={{ fontSize: 18, color: "#64748b" }} /></InputAdornment> } }} />
+                  )} />
+                </Grid>
+              </Grid>
+            </Box>
+          </Fade>
+        );
+      case 1:
+        return (
+          <Fade in={activeStep === 1} timeout={300}>
+            <Box>
+              <Grid container spacing={2.5}>
+                <Grid size={{ xs: 12 }}>
+                  <Controller name="contact" control={control} render={({ field }) => (
+                    <TextField {...field} label="Persona de contacto" fullWidth size="small"
+                      placeholder="Ej: Ricardo Gómez"
+                      slotProps={{ input: { startAdornment: <InputAdornment position="start"><Person sx={{ fontSize: 18, color: "#64748b" }} /></InputAdornment> } }} />
+                  )} />
+                </Grid>
+                <Grid size={{ xs: 12, sm: 6 }}>
+                  <Controller name="phone" control={control} render={({ field }) => (
+                    <TextField {...field} label="Teléfono" fullWidth size="small"
+                      placeholder="Ej: +52 312 456 7890"
+                      slotProps={{ input: { startAdornment: <InputAdornment position="start"><Phone sx={{ fontSize: 18, color: "#64748b" }} /></InputAdornment> } }} />
+                  )} />
+                </Grid>
+                <Grid size={{ xs: 12, sm: 6 }}>
+                  <Controller name="email" control={control} render={({ field }) => (
+                    <TextField {...field} label="Email" fullWidth size="small"
+                      error={!!errors.email} helperText={errors.email?.message}
+                      placeholder="ventas@central.com"
+                      slotProps={{ input: { startAdornment: <InputAdornment position="start"><Email sx={{ fontSize: 18, color: "#64748b" }} /></InputAdornment> } }} />
+                  )} />
+                </Grid>
+              </Grid>
+            </Box>
+          </Fade>
+        );
+      default:
+        return null;
+    }
+  };
+
   return (
     <Box sx={{ p: 1, animation: "fadeIn 0.4s ease-out" }}>
       <Typography variant="h2" sx={{ mb: 3, textAlign: "center", fontSize: "1.8rem" }}>
         Gestión de Proveedores
       </Typography>
 
-      {loading ? (
-        <Card sx={{ flex: 1, p: 2 }}><CardContent sx={{ p: 0, textAlign: "center" }}>
-          <Box sx={{ width: 60, height: 60, borderRadius: "12px", bgcolor: "rgba(59,130,246,0.1)", mx: "auto", mb: 1 }} />
-          <Box sx={{ width: 100, height: 24, bgcolor: "rgba(148,163,184,0.06)", mx: "auto", borderRadius: 1 }} />
-        </CardContent></Card>
-      ) : (
-        <Fade in={!loading} timeout={500}>
-          <Stack direction={{ xs: "column", md: "row" }} spacing={2} sx={{ mb: 3 }}>
-            <Card sx={{ flex: 1, background: "linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(59, 130, 246, 0.15) 100%)", border: "2px solid rgba(59, 130, 246, 0.2)" }}>
-              <CardContent sx={{ textAlign: "center", py: 2 }}>
-                <LocalShipping sx={{ fontSize: 36, color: theme.palette.primary.main, mb: 0.5 }} />
-                <Typography variant="h4" sx={{ fontWeight: 700, color: theme.palette.primary.main }}>{suppliers.length}</Typography>
-                <Typography variant="body2" color="textSecondary">Total Proveedores</Typography>
-              </CardContent>
-            </Card>
-          </Stack>
-        </Fade>
-      )}
-
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 3 }}>
         <Stack direction="row" spacing={1.5} alignItems="center">
-          <Button variant="contained" startIcon={<AddCircleOutline />} onClick={openAdd}>Nuevo Proveedor</Button>
           <TextField variant="outlined" placeholder="Buscar proveedores..." value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             InputProps={{ startAdornment: <InputAdornment position="start"><Search /></InputAdornment> }}
             sx={{ width: 320 }}
           />
+          <Chip label="Ctrl+P" size="small" variant="outlined"
+            sx={{ height: 20, fontSize: "0.55rem", color: "text.secondary", borderColor: "rgba(148,163,184,0.12)" }} />
         </Stack>
-        <Chip label="Ctrl+P" size="small" variant="outlined"
-          sx={{ height: 20, fontSize: "0.55rem", color: "text.secondary", borderColor: "rgba(148,163,184,0.12)" }} />
+        <Button variant="contained" startIcon={<AddCircleOutline />} onClick={openAdd}>Nuevo Proveedor</Button>
       </Box>
 
       {loading ? (
-        <TableSkeleton rows={4} columns={6} />
+        <TableSkeleton rows={4} columns={4} />
       ) : (
         <Fade in={!loading} timeout={500}>
-          <Card>
+          <Box sx={{
+            border: "1px solid", borderColor: "divider", borderRadius: 2, overflow: "hidden",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+            bgcolor: isDark ? "rgba(17,24,39,0.7)" : "rgba(255,255,255,0.85)",
+          }}>
             <TableContainer>
               <Table>
                 <TableHead>
                   <TableRow>
-                    <TableCell sx={{ fontWeight: 700 }}>Nombre</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Contacto</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Teléfono</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>Email</TableCell>
-                    <TableCell align="center" sx={{ fontWeight: 700 }}>Productos</TableCell>
-                    <TableCell align="center" sx={{ fontWeight: 700 }}>Acciones</TableCell>
+                    <TableCell sx={{ bgcolor: "#0f172a", color: "#f8fafc", fontWeight: 700, fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.5px", py: 1.5 }}>Proveedor</TableCell>
+                    <TableCell sx={{ bgcolor: "#0f172a", color: "#f8fafc", fontWeight: 700, fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.5px", py: 1.5 }}>Contacto Principal</TableCell>
+                    <TableCell sx={{ bgcolor: "#0f172a", color: "#f8fafc", fontWeight: 700, fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.5px", py: 1.5 }}>Comunicación</TableCell>
+                    <TableCell align="right" sx={{ bgcolor: "#0f172a", color: "#f8fafc", fontWeight: 700, fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.5px", py: 1.5 }}>Acciones</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {filtered.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage).map((s) => (
-                    <TableRow key={s.id} sx={{ "&:hover": { backgroundColor: "rgba(59, 130, 246, 0.06)" } }}>
-                      <TableCell><Typography variant="body1" sx={{ fontWeight: 600 }}>{s.name}</Typography></TableCell>
-                      <TableCell><Typography variant="body2" color="textSecondary">{s.contact || "—"}</Typography></TableCell>
-                      <TableCell><Typography variant="body2" color="textSecondary">{s.phone || "—"}</Typography></TableCell>
-                      <TableCell><Typography variant="body2" color="textSecondary">{s.email || "—"}</Typography></TableCell>
-                      <TableCell align="center"><Typography variant="body2" sx={{ fontWeight: 600 }}>{s.product_count || 0}</Typography></TableCell>
-                      <TableCell align="center">
-                        <Stack direction="row" spacing={0.5} justifyContent="center">
-                          <Tooltip title="Editar"><IconButton size="small" onClick={() => openEdit(s)}><Edit fontSize="small" sx={{ color: theme.palette.secondary.main }} /></IconButton></Tooltip>
-                          <Tooltip title="Eliminar"><IconButton size="small" color="error" onClick={() => setDeleteConfirm(s)}><Delete fontSize="small" /></IconButton></Tooltip>
+                    <TableRow key={s.id} sx={{
+                      "& .MuiTableCell-root": { py: 1.25 },
+                      "&:hover .supplier-actions": { opacity: 1 },
+                      "&:hover": { backgroundColor: isDark ? "rgba(59,130,246,0.06)" : "rgba(37,99,235,0.04)" },
+                    }}>
+                      <TableCell>
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                          <Box sx={{ width: 40, height: 40, borderRadius: "10px", bgcolor: isDark ? "rgba(59,130,246,0.12)" : "rgba(37,99,235,0.08)", border: "1px solid", borderColor: "divider", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                            <LocalShipping sx={{ fontSize: 20, color: theme.palette.primary.main }} />
+                          </Box>
+                          <Box>
+                            <Typography variant="body1" sx={{ fontWeight: 700, fontSize: "0.9rem" }}>{s.name}</Typography>
+                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.75rem" }}>{s.address || "Sin dirección"}</Typography>
+                          </Box>
+                        </Box>
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2" sx={{ fontWeight: 600, fontSize: "0.85rem" }}>{s.contact || "—"}</Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.75rem" }}>{s.product_count || 0} productos</Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Stack spacing={0.5}>
+                          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                            <Phone sx={{ fontSize: 14, color: "text.secondary" }} />
+                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.8rem" }}>{s.phone || "—"}</Typography>
+                          </Box>
+                          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                            <Email sx={{ fontSize: 14, color: "text.secondary" }} />
+                            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.8rem" }}>{s.email || "—"}</Typography>
+                          </Box>
+                        </Stack>
+                      </TableCell>
+                      <TableCell align="right">
+                        <Stack direction="row" spacing={0.5} justifyContent="flex-end" className="supplier-actions"
+                          sx={{ opacity: 0, transition: "opacity 0.2s ease" }}>
+                          <Tooltip title="Editar"><IconButton size="small" onClick={() => openEdit(s)} sx={{ "&:hover": { backgroundColor: "rgba(37,99,235,0.08)" } }}><EditOutlined fontSize="small" sx={{ color: "text.secondary" }} /></IconButton></Tooltip>
+                          <Tooltip title="Eliminar"><IconButton size="small" color="error" onClick={() => setDeleteConfirm(s)}><DeleteOutlined fontSize="small" /></IconButton></Tooltip>
                         </Stack>
                       </TableCell>
                     </TableRow>
                   ))}
                   {filtered.length === 0 && (
-                    <TableRow><TableCell colSpan={6} align="center"><Typography color="textSecondary" sx={{ py: 4 }}>No hay proveedores</Typography></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={4} align="center"><Typography color="textSecondary" sx={{ py: 4 }}>No hay proveedores</Typography></TableCell></TableRow>
                   )}
                 </TableBody>
               </Table>
@@ -184,54 +271,68 @@ const Suppliers = () => {
               onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0); }}
               labelRowsPerPage="Filas:" labelDisplayedRows={({ from, to, count }) => `${from}-${to} de ${count}`}
             />
-          </Card>
+          </Box>
         </Fade>
       )}
 
-      <Dialog open={modalOpen} onClose={() => setModalOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>
-          <Typography variant="h5" sx={{ fontWeight: 700 }}>{editItem ? "Editar Proveedor" : "Nuevo Proveedor"}</Typography>
+      <Dialog open={modalOpen} onClose={() => setModalOpen(false)} maxWidth="sm" fullWidth
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            if (activeStep < steps.length - 1) handleNext();
+            else handleSubmit(onSubmit)();
+          }
+        }}
+        PaperProps={{
+          sx: {
+            borderRadius: "20px",
+            background: isDark ? "rgba(17, 24, 39, 0.98)" : "rgba(255, 255, 255, 0.98)",
+            border: `1px solid ${isDark ? "rgba(59, 130, 246, 0.12)" : "rgba(37, 99, 235, 0.1)"}`,
+            maxHeight: "90vh",
+            display: "flex",
+            flexDirection: "column",
+          },
+        }}>
+        <DialogTitle sx={{ pb: 1 }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <Box sx={{ p: 1.5, borderRadius: "12px", background: "linear-gradient(135deg, #234e8c 0%, #1a3b6e 100%)", display: "flex" }}>
+              <LocalShipping sx={{ color: "white", fontSize: 28 }} />
+            </Box>
+            <Box>
+              <Typography variant="h5" sx={{ fontWeight: 700, fontSize: "1.3rem" }}>
+                {editItem ? "Editar Proveedor" : "Nuevo Proveedor"}
+              </Typography>
+              <Typography variant="body2" color="textSecondary">
+                {editItem ? "Modifique la información del proveedor" : "Complete la información del proveedor"}
+              </Typography>
+            </Box>
+          </Box>
         </DialogTitle>
-        <DialogContent>
-          {submitError && <Alert severity="error" sx={{ mb: 2 }}>{submitError}</Alert>}
-          <Stack spacing={2.5} sx={{ mt: 1 }}>
-            <Controller name="name" control={control} render={({ field }) => (
-              <TextField {...field} label="Nombre del proveedor" fullWidth autoFocus
-                error={!!errors.name} helperText={errors.name?.message}
-                InputProps={{ startAdornment: <InputAdornment position="start"><LocalShipping /></InputAdornment> }} />
-            )} />
-            <Controller name="contact" control={control} render={({ field }) => (
-              <TextField {...field} label="Persona de contacto" fullWidth
-                InputProps={{ startAdornment: <InputAdornment position="start"><Person /></InputAdornment> }} />
-            )} />
-            <Grid container spacing={2}>
-              <Grid item xs={6}>
-                <Controller name="phone" control={control} render={({ field }) => (
-                  <TextField {...field} label="Teléfono" fullWidth
-                    InputProps={{ startAdornment: <InputAdornment position="start"><Phone /></InputAdornment> }} />
-                )} />
-              </Grid>
-              <Grid item xs={6}>
-                <Controller name="email" control={control} render={({ field }) => (
-                  <TextField {...field} label="Email" fullWidth
-                    error={!!errors.email} helperText={errors.email?.message}
-                    InputProps={{ startAdornment: <InputAdornment position="start"><Email /></InputAdornment> }} />
-                )} />
-              </Grid>
-            </Grid>
-            <Controller name="address" control={control} render={({ field }) => (
-              <TextField {...field} label="Dirección" fullWidth multiline rows={2}
-                InputProps={{ startAdornment: <InputAdornment position="start"><LocationOn /></InputAdornment> }} />
-            )} />
-          </Stack>
+
+        <StepIndicator steps={steps} activeStep={activeStep} />
+
+        <DialogContent sx={{ px: 3, pb: 2, flex: 1, overflowY: "auto" }}>
+          {submitError && <Alert severity="error" sx={{ mb: 3 }}>{submitError}</Alert>}
+          {renderStepContent(activeStep)}
         </DialogContent>
-        <DialogActions sx={{ p: 2.5 }}>
-          <CancelButton onClick={() => setModalOpen(false)}>Cancelar</CancelButton>
-          <Button onClick={handleSubmit(onSubmit)} variant="outlined" disabled={isSubmitting}
-            startIcon={isSubmitting ? <CircularProgress size={18} color="inherit" /> : null}
-            sx={{ borderColor: "success.main", color: "success.main", backgroundColor: "rgba(16,185,129,0.06)", "&:hover": { backgroundColor: "rgba(16,185,129,0.12)", borderColor: "success.main" } }}>
-            {isSubmitting ? "Guardando..." : editItem ? "Actualizar" : "Crear"}
-          </Button>
+
+        <DialogActions sx={{ px: 3, pb: 3, justifyContent: "space-between" }}>
+          <Box>
+            {activeStep > 0 && (
+              <Button onClick={handleBack} startIcon={<ChevronLeft />} variant="outlined">Anterior</Button>
+            )}
+          </Box>
+          <Box sx={{ display: "flex", gap: 1.5 }}>
+            <CancelButton onClick={() => setModalOpen(false)}>Cancelar</CancelButton>
+            {activeStep < steps.length - 1 ? (
+              <Button onClick={handleNext} variant="contained" endIcon={<ChevronRight />}>Siguiente</Button>
+            ) : (
+              <Button onClick={handleSubmit(onSubmit)} variant="outlined" disabled={isSubmitting}
+                startIcon={isSubmitting ? <CircularProgress size={18} color="inherit" /> : null}
+                sx={{ borderColor: "success.main", color: "success.main", backgroundColor: "rgba(16,185,129,0.06)", "&:hover": { backgroundColor: "rgba(16,185,129,0.12)", borderColor: "success.main" } }}>
+                {isSubmitting ? "Guardando..." : editItem ? "Actualizar" : "Crear"}
+              </Button>
+            )}
+          </Box>
         </DialogActions>
       </Dialog>
 

@@ -1,6 +1,7 @@
 const { FusesPlugin } = require("@electron-forge/plugin-fuses");
 const { FuseV1Options, FuseVersion } = require("@electron/fuses");
 const { VitePlugin } = require("@electron-forge/plugin-vite");
+const { AutoUnpackNativesPlugin } = require("@electron-forge/plugin-auto-unpack-natives");
 
 module.exports = {
   packagerConfig: {
@@ -11,7 +12,9 @@ module.exports = {
   makers: [
     {
       name: "@electron-forge/maker-squirrel",
-      config: {},
+      config: {
+        name: "JRP_POS",
+      },
     },
     {
       name: "@electron-forge/maker-zip",
@@ -50,6 +53,7 @@ module.exports = {
         },
       ],
     }),
+    new AutoUnpackNativesPlugin({}),
     // Fuses are used to enable/disable various Electron functionality
     // at package time, before code signing the application
     new FusesPlugin({

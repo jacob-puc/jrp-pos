@@ -5,7 +5,7 @@ import {
   Alert, Avatar, Fade, useTheme, InputAdornment, IconButton,
 } from "@mui/material";
 import {
-  Store, Person, CheckCircle, LocationOn, ChevronRight, ChevronLeft, Lock, Visibility, VisibilityOff,
+  Store, Person, CheckCircle, LocationOn, ChevronRight, ChevronLeft, Lock, VisibilityOutlined, VisibilityOff,
 } from "@mui/icons-material";
 import CancelButton from "./CancelButton";
 
@@ -311,7 +311,7 @@ const SetupModal = ({ open, onComplete, onClose }) => {
                       endAdornment: (
                         <InputAdornment position="end">
                           <IconButton onClick={() => setShowPin(!showPin)} edge="end" size="small">
-                            {showPin ? <VisibilityOff fontSize="small" /> : <Visibility fontSize="small" />}
+                            {showPin ? <VisibilityOff fontSize="small" /> : <VisibilityOutlined fontSize="small" />}
                           </IconButton>
                         </InputAdornment>
                       ),

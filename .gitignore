@@ -97,3 +97,8 @@ dist/
 # Expo mobile
 mobile/node_modules/
 mobile/.expo/
+
+# Scripts y archivos de prueba (diagnóstico de impresoras)
+/*.ps1
+/test-*
+/GHIA-GTP582/

@@ -1,21 +1,23 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, Suspense } from "react";
 import { HashRouter, Routes, Route } from "react-router-dom";
 import { createTheme, ThemeProvider } from "@mui/material/styles";
 import CssBaseline from "@mui/material/CssBaseline";
 import { Box, Typography, CircularProgress } from "@mui/material";
-import Layout from "./components/Layout";
-import SalesTerminal from "./components/SalesTerminal";
-import Inventory from "./components/Inventory";
-import EndOfDay from "./components/EndOfDay";
-import Suppliers from "./components/Suppliers";
-import StockMovements from "./components/StockMovements";
-import Reports from "./components/Reports";
-import BackupRestore from "./components/BackupRestore";
-import Cashiers from "./components/Cashiers";
-import Categories from "./components/Categories";
 import SetupModal from "./components/SetupModal";
 import AddProductModal from "./components/AddProductModal";
 import LoginScreen from "./components/LoginScreen";
+import PageSkeleton from "./components/PageSkeleton";
+
+const Layout = React.lazy(() => import("./components/Layout"));
+const SalesTerminal = React.lazy(() => import("./components/SalesTerminal"));
+const Inventory = React.lazy(() => import("./components/Inventory"));
+const EndOfDay = React.lazy(() => import("./components/EndOfDay"));
+const Suppliers = React.lazy(() => import("./components/Suppliers"));
+const StockMovements = React.lazy(() => import("./components/StockMovements"));
+const Reports = React.lazy(() => import("./components/Reports"));
+const BackupRestore = React.lazy(() => import("./components/BackupRestore"));
+const Cashiers = React.lazy(() => import("./components/Cashiers"));
+const Categories = React.lazy(() => import("./components/Categories"));
 import { CashierProvider, useCashier } from "./contexts/CashierContext";
 import { ThemeModeContext } from "./contexts/ThemeContext";
 
@@ -159,7 +161,7 @@ const createModernTheme = (mode) => {
         styleOverrides: {
           root: {
             "& .MuiOutlinedInput-root": {
-              borderRadius: "12px",
+              borderRadius: "8px",
               backgroundColor: isDark ? "rgba(17, 24, 39, 0.6)" : "rgba(248, 250, 252, 0.85)",
               transition: "all 0.2s ease",
               "& fieldset": {
@@ -386,21 +388,23 @@ const AppInner = () => {
         <CssBaseline />
         <SetupModal open={showSetup} onComplete={handleSetupComplete} onClose={handleSetupClose} />
         <AddProductModal open={showAddProduct} onClose={() => setShowAddProduct(false)} onProductAdded={() => setShowAddProduct(false)} />
-        <HashRouter>
-          <Routes>
-            <Route path="/" element={<Layout />}>
-              <Route index element={<SalesTerminal />} />
-              <Route path="inventory" element={<Inventory />} />
-              <Route path="suppliers" element={<Suppliers />} />
-              <Route path="categories" element={<Categories />} />
-              <Route path="stock-movements" element={<StockMovements />} />
-              <Route path="end-of-day" element={<EndOfDay />} />
-              <Route path="reports" element={<Reports />} />
-              <Route path="backup" element={<BackupRestore />} />
-              <Route path="cashiers" element={<Cashiers />} />
-            </Route>
-          </Routes>
-        </HashRouter>
+        <Suspense fallback={<PageSkeleton />}>
+          <HashRouter>
+            <Routes>
+              <Route path="/" element={<Layout />}>
+                <Route index element={<SalesTerminal />} />
+                <Route path="inventory" element={<Inventory />} />
+                <Route path="suppliers" element={<Suppliers />} />
+                <Route path="categories" element={<Categories />} />
+                <Route path="stock-movements" element={<StockMovements />} />
+                <Route path="end-of-day" element={<EndOfDay />} />
+                <Route path="reports" element={<Reports />} />
+                <Route path="backup" element={<BackupRestore />} />
+                <Route path="cashiers" element={<Cashiers />} />
+              </Route>
+            </Routes>
+          </HashRouter>
+        </Suspense>
       </ThemeProvider>
     </ThemeModeContext.Provider>
   );
