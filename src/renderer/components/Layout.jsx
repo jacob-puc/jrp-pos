@@ -29,6 +29,7 @@ const Layout = () => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(true);
   const [storeName, setStoreName] = useState("MI TIENDA");
+  const [storeLogo, setStoreLogo] = useState("");
   const [clock, setClock] = useState(new Date());
   const location = useLocation();
   const navigate = useNavigate();
@@ -114,7 +115,9 @@ const Layout = () => {
     const loadStoreSettings = async () => {
       try {
         const name = await window.api.invoke("get-setting", "store_name");
+        const logo = await window.api.invoke("get-setting", "store_logo");
         if (name) setStoreName(name.toUpperCase());
+        if (logo) setStoreLogo(logo);
       } catch (error) {
         console.error("Error loading store settings:", error);
       }
@@ -136,8 +139,9 @@ const Layout = () => {
     window.addEventListener("setupCompleted", handleSetupCompleted);
 
     const handleSettingsUpdated = (event) => {
-      const { storeName: newStoreName } = event.detail;
+      const { storeName: newStoreName, storeLogo: newStoreLogo } = event.detail;
       if (newStoreName) setStoreName(newStoreName.toUpperCase());
+      if (typeof newStoreLogo === "string") setStoreLogo(newStoreLogo);
     };
     window.addEventListener("storeSettingsUpdated", handleSettingsUpdated);
 
@@ -192,10 +196,14 @@ const Layout = () => {
         e.preventDefault();
         setShortcutsDialogOpen(true);
       }
+      if (e.key === "F12") {
+        e.preventDefault();
+        logout();
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [location.pathname, navigate]);
+  }, [location.pathname, navigate, logout]);
 
   const isAdmin = cashier?.role === "admin";
 
@@ -461,8 +469,11 @@ const Layout = () => {
             </IconButton>
           </Box>
 
-          <Box sx={{ flex: 1, textAlign: "center" }}>
-            <Typography variant="body1" sx={{ fontWeight: 700, fontSize: "0.95rem", color: "#f1f5f9", letterSpacing: "0.5px" }}>
+          <Box sx={{ flex: 1, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: 1, minWidth: 0 }}>
+            {storeLogo && (
+              <Box component="img" src={storeLogo} alt="Logo" sx={{ height: 36, maxWidth: 56, borderRadius: 1, objectFit: "contain" }} />
+            )}
+            <Typography variant="body1" sx={{ fontWeight: 700, fontSize: "0.95rem", color: "#f1f5f9", letterSpacing: "0.5px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {storeName}
             </Typography>
           </Box>
@@ -662,9 +673,13 @@ const Layout = () => {
             {[
               { key: "F1", desc: "Mostrar esta ayuda" },
               { key: "F2", desc: "Agregar producto sin código (terminal)" },
+              { key: "F6", desc: "Descuento manual del producto (terminal)" },
               { key: "F3", desc: "Disminuir cantidad (terminal)" },
               { key: "F4", desc: "Aumentar cantidad (terminal)" },
               { key: "F8", desc: "Finalizar venta (terminal)" },
+              { key: "F10", desc: "Retirar efectivo (terminal)" },
+              { key: "F11", desc: "Cerrar caja (terminal, sin venta en curso)" },
+              { key: "F12", desc: "Cerrar sesión" },
               { key: "Ctrl + Q", desc: "Enfocar búsqueda (terminal)" },
               { key: "Ctrl + B", desc: "Colapsar menú lateral" },
               { key: "Ctrl + N", desc: "Nuevo producto en inventario" },

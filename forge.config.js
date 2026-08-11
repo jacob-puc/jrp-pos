@@ -7,6 +7,7 @@ module.exports = {
   packagerConfig: {
     asar: true,
     extraResource: ["./src/db/"],
+    icon: "./build/Icon.ico",
   },
   rebuildConfig: {},
   makers: [
@@ -14,6 +15,7 @@ module.exports = {
       name: "@electron-forge/maker-squirrel",
       config: {
         name: "JRP_POS",
+        setupIcon: "./build/Icon.ico",
       },
     },
     {

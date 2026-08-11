@@ -1,9 +1,30 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button,
   Typography, Box, Stack, useTheme, Switch, FormControlLabel, Divider,
 } from "@mui/material";
-import { Store, LocationOn, Save } from "@mui/icons-material";
+import { Store, LocationOn, Save, CloudUpload, DeleteOutline } from "@mui/icons-material";
+
+const resizeImage = (dataUrl, maxSize = 256) =>
+  new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      const scale = Math.min(1, maxSize / Math.max(width, height));
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
 
 const StoreSettingsDialog = ({ open, onClose }) => {
   const theme = useTheme();
@@ -12,6 +33,9 @@ const StoreSettingsDialog = ({ open, onClose }) => {
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [printTwoTickets, setPrintTwoTickets] = useState(false);
+  const [printEnabled, setPrintEnabled] = useState(true);
+  const [logo, setLogo] = useState("");
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     if (open) {
@@ -23,6 +47,8 @@ const StoreSettingsDialog = ({ open, onClose }) => {
             address: settings.store_address || "",
           });
           setPrintTwoTickets(settings.print_two_tickets === "true");
+          setPrintEnabled(settings.print_enabled !== "false");
+          setLogo(settings.store_logo || "");
         } catch (err) {
           console.error("Error loading settings:", err);
         }
@@ -30,6 +56,18 @@ const StoreSettingsDialog = ({ open, onClose }) => {
       load();
     }
   }, [open]);
+
+  const handleLogoChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const resized = await resizeImage(reader.result);
+      setLogo(resized);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
 
   const handleChange = (field) => (e) => {
     setFormData((prev) => ({ ...prev, [field]: e.target.value }));
@@ -47,8 +85,10 @@ const StoreSettingsDialog = ({ open, onClose }) => {
       await window.api.invoke("save-setting", "store_name", formData.storeName.trim());
       await window.api.invoke("save-setting", "store_address", formData.address.trim());
       await window.api.invoke("save-setting", "print_two_tickets", printTwoTickets ? "true" : "false");
+      await window.api.invoke("save-setting", "print_enabled", printEnabled ? "true" : "false");
+      await window.api.invoke("save-setting", "store_logo", logo);
       window.dispatchEvent(new CustomEvent("storeSettingsUpdated", {
-        detail: { storeName: formData.storeName.trim().toUpperCase(), address: formData.address.trim() },
+        detail: { storeName: formData.storeName.trim().toUpperCase(), address: formData.address.trim(), storeLogo: logo },
       }));
       onClose();
     } catch (err) {
@@ -105,13 +145,76 @@ const StoreSettingsDialog = ({ open, onClose }) => {
             }}
           />
           <Divider sx={{ my: 0.5 }} />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: "none" }}
+            onChange={handleLogoChange}
+          />
+          <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+            <Box sx={{
+              width: 64, height: 64, borderRadius: "14px", flexShrink: 0,
+              border: "1px solid", borderColor: "divider", overflow: "hidden",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              bgcolor: "background.paper",
+            }}>
+              {logo ? (
+                <img src={logo} alt="Logo de la tienda" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+              ) : (
+                <Store sx={{ color: "#64748b", fontSize: 28 }} />
+              )}
+            </Box>
+            <Stack spacing={1}>
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>Logo de la tienda</Typography>
+              <Typography variant="caption" color="textSecondary">
+                Se muestra en el ticket, la barra superior y la pantalla de acceso.
+              </Typography>
+              <Stack direction="row" spacing={1}>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<CloudUpload />}
+                  onClick={() => fileInputRef.current?.click()}
+                  sx={{ borderRadius: "10px", textTransform: "none" }}
+                >
+                  Subir logo
+                </Button>
+                {logo && (
+                  <Button
+                    size="small"
+                    color="error"
+                    startIcon={<DeleteOutline />}
+                    onClick={() => setLogo("")}
+                    sx={{ borderRadius: "10px", textTransform: "none" }}
+                  >
+                    Quitar
+                  </Button>
+                )}
+              </Stack>
+            </Stack>
+          </Box>
+          <Divider sx={{ my: 0.5 }} />
           <FormControlLabel
-            control={<Switch checked={printTwoTickets} onChange={(e) => setPrintTwoTickets(e.target.checked)} />}
+            control={<Switch checked={printEnabled} onChange={(e) => setPrintEnabled(e.target.checked)} />}
             label={
               <Box>
-                <Typography variant="body2" sx={{ fontWeight: 600 }}>Imprimir 2 tickets</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 600 }}>Imprimir tickets</Typography>
                 <Typography variant="caption" color="textSecondary">
-                  Para pagos con tarjeta y transferencia
+                  Imprime el ticket de cada venta
+                </Typography>
+              </Box>
+            }
+          />
+          <FormControlLabel
+            control={<Switch checked={printTwoTickets} disabled={!printEnabled} onChange={(e) => setPrintTwoTickets(e.target.checked)} />}
+            label={
+              <Box>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: printEnabled ? undefined : "text.disabled" }}>
+                  Imprimir 2 tickets
+                </Typography>
+                <Typography variant="caption" color="textSecondary">
+                  {printEnabled ? "Para pagos con tarjeta y transferencia" : "Activa \"Imprimir tickets\" para usarlo"}
                 </Typography>
               </Box>
             }

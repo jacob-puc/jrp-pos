@@ -15,6 +15,7 @@ const LoginScreen = ({ onLogin }) => {
   const [loading, setLoading] = useState(false);
   const [usersLoading, setUsersLoading] = useState(true);
   const [storeName, setStoreName] = useState("MI TIENDA");
+  const [storeLogo, setStoreLogo] = useState("");
   const theme = useTheme();
   const { setCashier } = useCashier();
   const pinRef = useRef(null);
@@ -24,12 +25,14 @@ const LoginScreen = ({ onLogin }) => {
     const load = async () => {
       setUsersLoading(true);
       try {
-        const [list, name] = await Promise.all([
+        const [list, name, logo] = await Promise.all([
           window.api.invoke("get-cashiers"),
           window.api.invoke("get-setting", "store_name"),
+          window.api.invoke("get-setting", "store_logo"),
         ]);
         setCashiers(list);
         if (name) setStoreName(name.toUpperCase());
+        if (logo) setStoreLogo(logo);
       } catch {}
       setUsersLoading(false);
     };
@@ -76,14 +79,26 @@ const LoginScreen = ({ onLogin }) => {
         : "linear-gradient(135deg, #f0f7ff 0%, #e2ecf8 100%)",
     }}>
       <Box sx={{ textAlign: "center", mb: 5, animation: "fadeIn 0.7s ease-out" }}>
-        <Box sx={{
-          width: 80, height: 80, borderRadius: "20px", mx: "auto", mb: 2.5,
-          background: "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          boxShadow: "0 12px 40px rgba(37, 99, 235, 0.35)",
-        }}>
-          <Person sx={{ color: "white", fontSize: 40 }} />
-        </Box>
+        {storeLogo ? (
+          <Box sx={{
+            width: 88, height: 88, borderRadius: "20px", mx: "auto", mb: 2.5, overflow: "hidden",
+            background: "rgba(255,255,255,0.9)",
+            border: "2px solid rgba(37, 99, 235, 0.25)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            boxShadow: "0 12px 40px rgba(37, 99, 235, 0.25)",
+          }}>
+            <img src={storeLogo} alt="Logo" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+          </Box>
+        ) : (
+          <Box sx={{
+            width: 80, height: 80, borderRadius: "20px", mx: "auto", mb: 2.5,
+            background: "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            boxShadow: "0 12px 40px rgba(37, 99, 235, 0.35)",
+          }}>
+            <Person sx={{ color: "white", fontSize: 40 }} />
+          </Box>
+        )}
         <Typography variant="h4" sx={{ fontWeight: 900, fontSize: "1.8rem", letterSpacing: "1px", color: isDark ? "#f1f5f9" : "#0f172a" }}>
           {storeName}
         </Typography>

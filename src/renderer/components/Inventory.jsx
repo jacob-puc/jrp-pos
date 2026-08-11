@@ -224,7 +224,13 @@ const Inventory = () => {
 
   const confirmDelete = async () => {
     if (selectedProduct) {
-      await window.api.invoke("delete-product", selectedProduct.id);
+      const result = await window.api.invoke(
+        "delete-product",
+        selectedProduct.id,
+      );
+      if (!result?.success) {
+        alert(result?.error || "No se pudo eliminar el producto");
+      }
       fetchProducts();
       setDeleteConfirmOpen(false);
       setSelectedProduct(null);
@@ -1019,8 +1025,8 @@ const Inventory = () => {
         <DialogTitle>Confirmar Eliminación</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            ¿Eliminar "{selectedProduct?.name}"? Esta acción no se puede
-            deshacer.
+            ¿Eliminar "{selectedProduct?.name}"? El producto se ocultará del
+            inventario y no podrá venderse.
           </DialogContentText>
         </DialogContent>
         <DialogActions>

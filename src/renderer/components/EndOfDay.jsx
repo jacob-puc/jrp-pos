@@ -90,6 +90,8 @@ const EndOfDay = () => {
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [withdrawReason, setWithdrawReason] = useState("");
   const [expensesList, setExpensesList] = useState([]);
+  const [cancelSaleData, setCancelSaleData] = useState(null);
+  const [cancelLoading, setCancelLoading] = useState(false);
   const theme = useTheme();
   const isDark = theme.palette.mode === "dark";
 
@@ -111,12 +113,12 @@ const EndOfDay = () => {
     );
     if (success) {
       setSales(fetchedSales || []);
-      const total = (fetchedSales || []).reduce(
-        (sum, sale) => sum + sale.total,
-        0,
+      const active = (fetchedSales || []).filter(
+        (s) => s.status !== "cancelado",
       );
+      const total = active.reduce((sum, sale) => sum + sale.total, 0);
       setTotalSales(total);
-      setSalesCount(fetchedSales?.length || 0);
+      setSalesCount(active.length);
     }
     const closedResult = await window.api.invoke("get-closed-registers", {
       cashierId: cashier?.id,
@@ -225,7 +227,7 @@ const EndOfDay = () => {
       <hr>
       <div class="section-title">Ventas del Día</div>
       <table><tr><th>#</th><th>Hora</th><th>Método</th><th>Total</th></tr>
-      ${sales.map((s, i) => `<tr><td>${i + 1}</td><td>${new Date(s.created_at).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</td><td>${methodNames[s.payment_method] || s.payment_method}</td><td align="right">$${s.total.toFixed(2)}</td></tr>`).join("")}
+      ${sales.filter((s) => s.status !== "cancelado").map((s, i) => `<tr><td>${i + 1}</td><td>${new Date(s.created_at).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</td><td>${methodNames[s.payment_method] || s.payment_method}</td><td align="right">$${s.total.toFixed(2)}</td></tr>`).join("")}
       <tr class="total-row"><td colspan="3">TOTAL VENTAS</td><td align="right">$${totalSales.toFixed(2)}</td></tr>
       </table>
       ${expensesHtml}
@@ -291,7 +293,9 @@ const EndOfDay = () => {
     doc.setTextColor(30);
     doc.text("VENTAS DEL DÍA", margin, 44);
 
-    const saleRows = sales.map((s, i) => [
+    const saleRows = sales
+      .filter((s) => s.status !== "cancelado")
+      .map((s, i) => [
       i + 1,
       new Date(s.created_at).toLocaleTimeString("es-MX", {
         hour: "2-digit",
@@ -510,6 +514,27 @@ const EndOfDay = () => {
     }
   };
 
+  const handleCancelSale = async () => {
+    if (!cancelSaleData) return;
+    setCancelLoading(true);
+    const result = await window.api.invoke("cancel-sale", {
+      saleId: cancelSaleData.id,
+      cashierName: cashier?.name,
+    });
+    setCancelLoading(false);
+    const saleId = cancelSaleData.id;
+    setCancelSaleData(null);
+    if (result.success) {
+      fetchData();
+      setRegisterMessage({
+        type: "success",
+        text: `Venta #${saleId} cancelada. Se revirtió el stock.`,
+      });
+    } else {
+      setRegisterMessage({ type: "error", text: result.error });
+    }
+  };
+
   const handleRegisterExpense = async () => {
     const amount = parseFloat(withdrawAmount);
     if (!amount || amount <= 0) {
@@ -557,24 +582,61 @@ const EndOfDay = () => {
       String(register.cashier_id) === String(cashier?.id);
     return isOwn || openerIsAdmin || cashier?.role === "admin";
   }, [isOpen, register, cashier?.id, cashier?.role]);
+
+  useEffect(() => {
+    if (loading) return;
+    const action = localStorage.getItem("eodPendingAction");
+    if (!action) return;
+    localStorage.removeItem("eodPendingAction");
+    if (action === "close-register") {
+      if (!canManageRegister) {
+        setRegisterMessage({
+          type: "error",
+          text: "No hay caja abierta para cerrar",
+        });
+        return;
+      }
+      setRegisterName("");
+      setExpenses("");
+      setCloseRegisterModal(true);
+    } else if (action === "withdraw") {
+      if (!canManageRegister) {
+        setRegisterMessage({
+          type: "error",
+          text: "No hay caja abierta para retirar efectivo",
+        });
+        return;
+      }
+      setWithdrawAmount("");
+      setWithdrawReason("");
+      setWithdrawDialogOpen(true);
+    }
+  }, [loading, canManageRegister]);
+
   const totalCash = useMemo(
     () =>
       sales
-        .filter((s) => s.payment_method === "cash")
+        .filter(
+          (s) => s.status !== "cancelado" && s.payment_method === "cash",
+        )
         .reduce((sum, s) => sum + s.total, 0),
     [sales],
   );
   const totalCard = useMemo(
     () =>
       sales
-        .filter((s) => s.payment_method === "card")
+        .filter(
+          (s) => s.status !== "cancelado" && s.payment_method === "card",
+        )
         .reduce((sum, s) => sum + s.total, 0),
     [sales],
   );
   const totalTransfer = useMemo(
     () =>
       sales
-        .filter((s) => s.payment_method === "transfer")
+        .filter(
+          (s) => s.status !== "cancelado" && s.payment_method === "transfer",
+        )
         .reduce((sum, s) => sum + s.total, 0),
     [sales],
   );
@@ -585,6 +647,8 @@ const EndOfDay = () => {
         ...sales.map((s) => ({
           type: "sale",
           id: `sale-${s.id}`,
+          saleId: s.id,
+          status: s.status,
           title: `Venta #${s.id}`,
           desc:
             s.payment_method === "cash"
@@ -1506,9 +1570,24 @@ const EndOfDay = () => {
                           {item.icon}
                         </Box>
                         <Box sx={{ flex: 1 }}>
-                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                            {item.title}
-                          </Typography>
+                          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                              {item.title}
+                            </Typography>
+                            {item.status === "cancelado" && (
+                              <Chip
+                                label="Cancelado"
+                                size="small"
+                                sx={{
+                                  fontSize: "0.58rem",
+                                  fontWeight: 700,
+                                  height: 18,
+                                  bgcolor: "rgba(239,68,68,0.14)",
+                                  color: "error.main",
+                                }}
+                              />
+                            )}
+                          </Box>
                           <Typography variant="caption" color="textSecondary">
                             <AccessTime
                               fontSize="inherit"
@@ -1517,20 +1596,56 @@ const EndOfDay = () => {
                             {formatMXTime(item.time)} — {item.desc}
                           </Typography>
                         </Box>
-                        <Typography
-                          variant="h6"
+                        <Box
                           sx={{
-                            fontWeight: 700,
-                            fontSize: "1rem",
-                            color:
-                              item.type === "sale"
-                                ? theme.palette.success.main
-                                : "error.main",
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "flex-end",
+                            gap: 0.25,
                           }}
                         >
-                          {item.type === "sale" ? "+" : "-"}$
-                          {Math.abs(item.amount).toFixed(2)}
-                        </Typography>
+                          <Typography
+                            variant="h6"
+                            sx={{
+                              fontWeight: 700,
+                              fontSize: "1rem",
+                              color:
+                                item.status === "cancelado"
+                                  ? "text.secondary"
+                                  : item.type === "sale"
+                                    ? theme.palette.success.main
+                                    : "error.main",
+                              textDecoration:
+                                item.status === "cancelado"
+                                  ? "line-through"
+                                  : "none",
+                            }}
+                          >
+                            {item.type === "sale" ? "+" : "-"}$
+                            {Math.abs(item.amount).toFixed(2)}
+                          </Typography>
+                          {item.type === "sale" &&
+                            item.status !== "cancelado" &&
+                            canManageRegister && (
+                              <Button
+                                size="small"
+                                color="error"
+                                onClick={() =>
+                                  setCancelSaleData({ id: item.saleId })
+                                }
+                                sx={{
+                                  fontSize: "0.65rem",
+                                  fontWeight: 600,
+                                  textTransform: "none",
+                                  minWidth: 0,
+                                  py: 0,
+                                  px: 0.5,
+                                }}
+                              >
+                                Cancelar
+                              </Button>
+                            )}
+                        </Box>
                       </Box>
                     </ListItem>
                     {index < dayItems.length - 1 && (
@@ -1912,6 +2027,53 @@ const EndOfDay = () => {
             }}
           >
             Cerrar Caja
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={!!cancelSaleData}
+        onClose={() => !cancelLoading && setCancelSaleData(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle sx={{ px: 3, pt: 3, pb: 1.5 }}>
+          <Stack
+            direction="row"
+            spacing={1.5}
+            alignItems="center"
+          >
+            <Warning sx={{ color: "error.main" }} />
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
+              Cancelar venta #{cancelSaleData?.id}
+            </Typography>
+          </Stack>
+        </DialogTitle>
+        <DialogContent sx={{ px: 3, pb: 2 }}>
+          <Typography variant="body2" color="textSecondary">
+            Se revertirá el stock de los productos y esta venta dejará de contar
+            en la caja y en las ganancias. Esta acción no se puede deshacer.
+          </Typography>
+        </DialogContent>
+        <DialogActions
+          sx={{ px: 3, pb: 3, justifyContent: "space-between" }}
+        >
+          <CancelButton
+            onClick={() => !cancelLoading && setCancelSaleData(null)}
+          >
+            No
+          </CancelButton>
+          <Button
+            variant="contained"
+            color="error"
+            disabled={cancelLoading}
+            onClick={handleCancelSale}
+          >
+            {cancelLoading ? (
+              <CircularProgress size={18} color="inherit" />
+            ) : (
+              "Sí, cancelar"
+            )}
           </Button>
         </DialogActions>
       </Dialog>
@@ -2594,6 +2756,7 @@ const EndOfDay = () => {
                             id: `#V-${s.id}`,
                             time: s.created_at,
                             method: s.payment_method,
+                            status: s.status,
                             methodLabel:
                               methodNames[s.payment_method] || s.payment_method,
                             amount: s.total,
@@ -2651,7 +2814,11 @@ const EndOfDay = () => {
                               <TableCell>
                                 <Chip
                                   label={
-                                    item.type === "sale" ? "Venta" : "Gasto"
+                                    item.type === "sale"
+                                      ? item.status === "cancelado"
+                                        ? "Cancelado"
+                                        : "Venta"
+                                      : "Gasto"
                                   }
                                   size="small"
                                   variant="filled"
@@ -2660,19 +2827,27 @@ const EndOfDay = () => {
                                     fontWeight: 700,
                                     height: 22,
                                     bgcolor:
-                                      item.type === "sale"
+                                      item.type === "sale" &&
+                                      item.status === "cancelado"
                                         ? isDark
-                                          ? "rgba(59,130,246,0.18)"
-                                          : "#eef2ff"
+                                          ? "rgba(239,68,68,0.18)"
+                                          : "#fee2e2"
+                                        : item.type === "sale"
+                                          ? isDark
+                                            ? "rgba(59,130,246,0.18)"
+                                            : "#eef2ff"
                                         : isDark
                                           ? "rgba(239,68,68,0.18)"
                                           : "#fee2e2",
                                     color:
-                                      item.type === "sale"
-                                        ? isDark
-                                          ? "#93c5fd"
-                                          : "#4338ca"
-                                        : "error.main",
+                                      item.type === "sale" &&
+                                      item.status === "cancelado"
+                                        ? "error.main"
+                                        : item.type === "sale"
+                                          ? isDark
+                                            ? "#93c5fd"
+                                            : "#4338ca"
+                                          : "error.main",
                                   }}
                                 />
                               </TableCell>
@@ -2709,9 +2884,15 @@ const EndOfDay = () => {
                                   fontWeight: 700,
                                   fontSize: "0.82rem",
                                   color:
-                                    item.type === "sale"
-                                      ? "text.primary"
-                                      : "error.main",
+                                    item.status === "cancelado"
+                                      ? "text.secondary"
+                                      : item.type === "sale"
+                                        ? "text.primary"
+                                        : "error.main",
+                                  textDecoration:
+                                    item.status === "cancelado"
+                                      ? "line-through"
+                                      : "none",
                                 }}
                               >
                                 {item.type === "sale" ? "+" : "-"}$

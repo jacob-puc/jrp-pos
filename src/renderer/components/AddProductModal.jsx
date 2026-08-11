@@ -20,6 +20,8 @@ import {
   CircularProgress,
   Fade,
   IconButton,
+  FormControlLabel,
+  Switch,
 } from "@mui/material";
 import {
   BarcodeReader,
@@ -55,6 +57,7 @@ const productSchema = z.object({
   cost_price: z.string().optional(),
   min_stock: z.string().optional(),
   discount_percent: z.string().optional(),
+  has_discount: z.boolean().optional(),
   sale_unit: z.string().optional(),
   box_qty: z.string().optional(),
   box_price: z.string().optional(),
@@ -74,6 +77,7 @@ const AddProductModal = ({
   const [categories, setCategories] = useState([]);
   const [submitError, setSubmitError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [barcodeStatus, setBarcodeStatus] = useState({ type: null, name: "" });
   const theme = useTheme();
   const isDark = theme.palette.mode === "dark";
 
@@ -84,6 +88,7 @@ const AddProductModal = ({
     reset,
     watch,
     trigger,
+    setValue,
   } = useForm({
     resolver: zodResolver(productSchema),
     defaultValues: {
@@ -104,6 +109,31 @@ const AddProductModal = ({
   });
 
   const watchedValues = watch();
+
+  useEffect(() => {
+    const code = (watchedValues.barcode || "").trim();
+    if (!code) {
+      setBarcodeStatus({ type: null, name: "" });
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const res = await window.api.invoke("check-barcode-exists", code);
+        if (!res.exists) {
+          setBarcodeStatus({ type: null, name: "" });
+        } else if (editProduct && res.id === editProduct.id) {
+          setBarcodeStatus({ type: null, name: "" });
+        } else if (res.active) {
+          setBarcodeStatus({ type: "active", name: res.name });
+        } else {
+          setBarcodeStatus({ type: "inactive", name: res.name });
+        }
+      } catch {
+        setBarcodeStatus({ type: null, name: "" });
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [watchedValues.barcode, editProduct]);
 
   useEffect(() => {
     if (open) {
@@ -131,6 +161,7 @@ const AddProductModal = ({
           cost_price: editProduct.cost_price?.toString() || "",
           min_stock: editProduct.min_stock?.toString() || "5",
           discount_percent: editProduct.discount_percent?.toString() || "0",
+          has_discount: !!editProduct.has_discount,
           sale_unit: editProduct.sale_unit || "piece",
           box_qty: boxQty.toString(),
           box_price: editProduct.box_price?.toString() || "",
@@ -147,6 +178,7 @@ const AddProductModal = ({
           cost_price: "",
           min_stock: "5",
           discount_percent: "0",
+          has_discount: false,
           sale_unit: "piece",
           box_qty: "0",
           box_price: "",
@@ -155,6 +187,7 @@ const AddProductModal = ({
       setActiveStep(0);
       setSubmitError("");
       setIsSubmitting(false);
+      setBarcodeStatus({ type: null, name: "" });
     }
   }, [open, editProduct, initialBarcode, reset]);
 
@@ -172,6 +205,14 @@ const AddProductModal = ({
   };
 
   const handleNext = async () => {
+    if (activeStep === 0 && !editProduct && !watchedValues.barcode?.trim()) {
+      try {
+        const code = await window.api.invoke("get-next-barcode");
+        setValue("barcode", code);
+      } catch {
+        setValue("barcode", `2${Date.now()}`);
+      }
+    }
     let fieldsToValidate = [];
     if (activeStep === 0)
       fieldsToValidate = ["barcode", "name", "brand", "supplier_id"];
@@ -210,7 +251,10 @@ const AddProductModal = ({
         category_id: data.category_id ? parseInt(data.category_id) : null,
         cost_price: parseFloat(data.cost_price) || 0,
         min_stock: parseInt(data.min_stock) || 5,
-        discount_percent: parseFloat(data.discount_percent) || 0,
+        discount_percent: data.has_discount
+          ? parseFloat(data.discount_percent) || 0
+          : 0,
+        has_discount: data.has_discount ? 1 : 0,
         sale_unit: data.sale_unit || "piece",
         box_qty: boxQty,
         box_price: parseFloat(data.box_price) || 0,
@@ -265,8 +309,14 @@ const AddProductModal = ({
                         fullWidth
                         label="Código de Barras"
                         size="small"
-                        error={!!errors.barcode}
-                        helperText={errors.barcode?.message}
+                        error={barcodeStatus.type === "active" || !!errors.barcode}
+                        helperText={
+                          barcodeStatus.type === "active"
+                            ? `Ya existe un producto con este código: ${barcodeStatus.name}`
+                            : barcodeStatus.type === "inactive"
+                              ? "Existe un producto inactivo con este código; se reactivará al guardar"
+                              : errors.barcode?.message
+                        }
                         placeholder="780123456789"
                         slotProps={{
                           input: {
@@ -570,32 +620,90 @@ const AddProductModal = ({
                     )}
                   />
                 </Grid>
-                <Grid size={{ xs: 6, sm: su === "box" ? 3 : 4 }}>
-                  <Controller
-                    name="discount_percent"
-                    control={control}
-                    render={({ field }) => (
-                      <TextField
-                        {...field}
-                        fullWidth
-                        label="Descuento"
-                        type="number"
-                        size="small"
-                        slotProps={{
-                          input: {
-                            startAdornment: (
-                              <InputAdornment position="start">
-                                <Percent
-                                  sx={{ fontSize: 18, color: "#64748b" }}
-                                />
-                              </InputAdornment>
-                            ),
-                          },
-                        }}
-                        inputProps={{ min: 0, max: 100, step: 1 }}
-                      />
+                <Grid size={{ xs: 12 }}>
+                  <Box
+                    sx={{
+                      p: 1.5,
+                      borderRadius: "12px",
+                      border: "1px solid",
+                      borderColor: "divider",
+                      bgcolor: isDark
+                        ? "rgba(255,255,255,0.03)"
+                        : "#fafaf9",
+                    }}
+                  >
+                    <FormControlLabel
+                      control={
+                        <Controller
+                          name="has_discount"
+                          control={control}
+                          render={({ field }) => (
+                            <Switch
+                              checked={!!field.value}
+                              onChange={(e) => field.onChange(e.target.checked)}
+                            />
+                          )}
+                        />
+                      }
+                      label={
+                        <Box>
+                          <Typography
+                            variant="body2"
+                            sx={{ fontWeight: 600 }}
+                          >
+                            Descuento/Promoción
+                          </Typography>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                          >
+                            {watchedValues.has_discount
+                              ? "Activo. Define el % o deja en 0 para descontar manual en caja."
+                              : "Sin descuento/promoción para este producto."}
+                          </Typography>
+                        </Box>
+                      }
+                    />
+                    {watchedValues.has_discount && (
+                      <Box sx={{ mt: 1.5 }}>
+                        <Controller
+                          name="discount_percent"
+                          control={control}
+                          render={({ field }) => (
+                            <TextField
+                              {...field}
+                              fullWidth
+                              label="Descuento (%)"
+                              type="number"
+                              size="small"
+                              slotProps={{
+                                input: {
+                                  startAdornment: (
+                                    <InputAdornment position="start">
+                                      <Percent
+                                        sx={{
+                                          fontSize: 18,
+                                          color: "#64748b",
+                                        }}
+                                      />
+                                    </InputAdornment>
+                                  ),
+                                },
+                              }}
+                              inputProps={{ min: 0, max: 100, step: 1 }}
+                              helperText={
+                                parseFloat(
+                                  watchedValues.discount_percent || "0",
+                                ) === 0
+                                  ? "Con 0%, el botón de descuento aparecerá en el carrito."
+                                  : "Este % se aplicará automáticamente en cada venta."
+                              }
+                            />
+                          )}
+                        />
+                      </Box>
                     )}
-                  />
+                  </Box>
                 </Grid>
               </Grid>
 

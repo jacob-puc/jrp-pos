@@ -36,6 +36,7 @@ const createTables = () => {
     min_stock INTEGER DEFAULT 5,
     discount_percent REAL DEFAULT 0,
     is_active INTEGER DEFAULT 1,
+    has_discount INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
@@ -158,6 +159,17 @@ const createTables = () => {
     ensureColumn("sale_items", "product_name", "TEXT");
   }
 
+  // Cancellation support
+  if (!sCols2.find((c) => c.name === "status")) {
+    ensureColumn("sales", "status", "TEXT DEFAULT 'completado'");
+  }
+  ensureColumn("sales", "cancelled_at", "DATETIME");
+  ensureColumn("sales", "cancelled_by", "TEXT");
+  const siCancelledCols = db.prepare("PRAGMA table_info(sale_items)").all();
+  if (!siCancelledCols.find((c) => c.name === "stock_deducted")) {
+    ensureColumn("sale_items", "stock_deducted", "REAL DEFAULT 0");
+  }
+
   // Make product_id nullable (recreate table) using a fresh PRAGMA check
   const siColsFresh = db.prepare("PRAGMA table_info(sale_items)").all();
   const pcol = siColsFresh.find((c) => c.name === "product_id");
@@ -198,6 +210,32 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_date_completed ON tasks(task_date,
 db.exec(`CREATE INDEX IF NOT EXISTS idx_stock_movements_product ON stock_movements(product_id)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_stock_movements_created ON stock_movements(created_at)`);
 
+// Migration: make register_id nullable in cash_register_expenses (gastos sin caja)
+{
+  const expCols = db.prepare("PRAGMA table_info(cash_register_expenses)").all();
+  const expRegCol = expCols.find((c) => c.name === "register_id");
+  if (expRegCol && expRegCol.notnull === 1) {
+    db.pragma("foreign_keys = OFF");
+    db.exec(`
+      CREATE TABLE cash_register_expenses_v2 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        register_id INTEGER REFERENCES cash_register(id),
+        amount REAL NOT NULL,
+        reason TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    db.exec(
+      `INSERT INTO cash_register_expenses_v2 (id, register_id, amount, reason, created_at)
+       SELECT id, register_id, amount, reason, created_at FROM cash_register_expenses`,
+    );
+    db.exec(`DROP TABLE cash_register_expenses`);
+    db.exec(`ALTER TABLE cash_register_expenses_v2 RENAME TO cash_register_expenses`);
+    db.pragma("foreign_keys = ON");
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_cash_register_expenses_register ON cash_register_expenses(register_id)`);
+  }
+}
+
 // Migration: add name to cash_register
 ensureColumn("cash_register", "name", "TEXT");
 
@@ -210,6 +248,9 @@ ensureColumn("stock_movements", "cost", "REAL DEFAULT 0");
 // Migration: add box fields to products
 ensureColumn("products", "box_qty", "INTEGER DEFAULT 0");
 ensureColumn("products", "box_price", "REAL DEFAULT 0");
+
+// Migration: add has_discount to products
+ensureColumn("products", "has_discount", "INTEGER DEFAULT 0");
 
 // Migration: add cashier_id to cash_register
 ensureColumn("cash_register", "cashier_id", "INTEGER");
@@ -396,7 +437,9 @@ ipcMain.handle("get-products", async (event, params) => {
     queryParams.push(parseInt(supplier_id));
   }
   const where =
-    conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "WHERE 1=1";
+    conditions.length > 0
+      ? "WHERE " + conditions.join(" AND ") + " AND p.is_active = 1"
+      : "WHERE p.is_active = 1";
   const allowedSort = { name: "p.name", price: "p.price", stock: "p.stock" };
   const col = allowedSort[sortField] || "p.name";
   const dir = sortDir === "desc" ? "DESC" : "ASC";
@@ -427,7 +470,9 @@ ipcMain.handle("get-products", async (event, params) => {
     .all(...queryParams, limit, offset);
 
   const statsConditions =
-    conditions.length > 0 ? conditions.join(" AND ") : "1";
+    conditions.length > 0
+      ? conditions.join(" AND ") + " AND p.is_active = 1"
+      : "p.is_active = 1";
   const statsParams = conditions.length > 0 ? [...queryParams] : [];
 
   const stats = db
@@ -462,6 +507,29 @@ ipcMain.handle("get-all-products", async () => {
   return { products };
 });
 
+ipcMain.handle("get-next-barcode", async () => {
+  const { m } = db
+    .prepare(
+      `SELECT MAX(CAST(barcode AS INTEGER)) AS m FROM products WHERE barcode GLOB '2[0-9]*'`,
+    )
+    .get();
+  return String(Math.max(m || 0, 1999999999) + 1);
+});
+
+ipcMain.handle("check-barcode-exists", async (event, barcode) => {
+  if (!barcode) return { exists: false };
+  const row = db
+    .prepare("SELECT id, name, is_active FROM products WHERE barcode = ?")
+    .get(String(barcode).trim());
+  if (!row) return { exists: false };
+  return {
+    exists: true,
+    active: row.is_active === 1,
+    name: row.name,
+    id: row.id,
+  };
+});
+
 ipcMain.handle("add-product", async (event, product) => {
   const {
     barcode,
@@ -476,23 +544,50 @@ ipcMain.handle("add-product", async (event, product) => {
     cost_price,
     min_stock,
     discount_percent,
+    has_discount,
     sale_unit,
     box_qty,
     box_price,
   } = product;
   try {
     const existing = db
-      .prepare("SELECT id FROM products WHERE barcode = ?")
+      .prepare("SELECT id, is_active FROM products WHERE barcode = ?")
       .get(barcode);
-    if (existing)
+    if (existing && existing.is_active)
       return {
         success: false,
         error: "Ya existe un producto con este código de barras",
       };
 
+    if (existing) {
+      const stmt = db.prepare(`UPDATE products SET
+        name=?, brand=?, price=?, stock=?, category_id=?, supplier_id=?,
+        expiry_date=?, image_path=?, cost_price=?, min_stock=?, discount_percent=?, has_discount=?, is_active=1, sale_unit=?, box_qty=?, box_price=?
+        WHERE id=?`);
+      stmt.run(
+        name,
+        brand,
+        price,
+        stock || 0,
+        category_id || null,
+        supplier_id || null,
+        expiry_date || null,
+        image_path || null,
+        cost_price || 0,
+        min_stock || 5,
+        discount_percent || 0,
+        has_discount ? 1 : 0,
+        sale_unit || "piece",
+        box_qty || 0,
+        box_price || 0,
+        existing.id,
+      );
+      return { success: true, id: existing.id, overwritten: true };
+    }
+
     const stmt = db.prepare(`INSERT INTO products
-      (barcode, name, brand, price, stock, category_id, supplier_id, expiry_date, image_path, cost_price, min_stock, discount_percent, sale_unit, box_qty, box_price)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      (barcode, name, brand, price, stock, category_id, supplier_id, expiry_date, image_path, cost_price, min_stock, discount_percent, has_discount, sale_unit, box_qty, box_price)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const info = stmt.run(
       barcode,
       name,
@@ -506,6 +601,7 @@ ipcMain.handle("add-product", async (event, product) => {
       cost_price || 0,
       min_stock || 5,
       discount_percent || 0,
+      has_discount ? 1 : 0,
       sale_unit || "piece",
       box_qty || 0,
       box_price || 0,
@@ -535,6 +631,7 @@ ipcMain.handle("update-product", async (event, id, product) => {
       cost_price,
       min_stock,
       discount_percent,
+      has_discount,
       is_active,
       sale_unit,
       box_qty,
@@ -552,7 +649,7 @@ ipcMain.handle("update-product", async (event, id, product) => {
 
     const stmt = db.prepare(`UPDATE products SET
       barcode=?, name=?, brand=?, price=?, stock=?, category_id=?, supplier_id=?,
-      expiry_date=?, image_path=?, cost_price=?, min_stock=?, discount_percent=?, is_active=?, sale_unit=?, box_qty=?, box_price=?
+      expiry_date=?, image_path=?, cost_price=?, min_stock=?, discount_percent=?, has_discount=?, is_active=?, sale_unit=?, box_qty=?, box_price=?
       WHERE id=?`);
     const info = stmt.run(
       barcode || "",
@@ -567,6 +664,7 @@ ipcMain.handle("update-product", async (event, id, product) => {
       cost_price || 0,
       min_stock || 5,
       discount_percent || 0,
+      has_discount ? 1 : 0,
       is_active !== undefined ? is_active : 1,
       sale_unit || "piece",
       box_qty || 0,
@@ -583,7 +681,9 @@ ipcMain.handle("update-product", async (event, id, product) => {
 
 ipcMain.handle("delete-product", async (event, productId) => {
   try {
-    const info = db.prepare("DELETE FROM products WHERE id = ?").run(productId);
+    const info = db
+      .prepare("UPDATE products SET is_active = 0 WHERE id = ?")
+      .run(productId);
     return { success: true, changes: info.changes };
   } catch (error) {
     return { success: false, error: error.message };
@@ -593,7 +693,7 @@ ipcMain.handle("delete-product", async (event, productId) => {
 ipcMain.handle("get-product-by-barcode", async (event, barcode) => {
   try {
     const product = db
-      .prepare("SELECT * FROM products WHERE barcode = ?")
+      .prepare("SELECT * FROM products WHERE barcode = ? AND is_active = 1")
       .get(barcode);
     return { success: !!product, product };
   } catch (error) {
@@ -626,6 +726,7 @@ ipcMain.handle("get-top-products", async () => {
       SELECT p.*, c.name as category_name, COALESCE(SUM(si.quantity),0) as total_sold
       FROM products p
       LEFT JOIN sale_items si ON p.id = si.product_id
+      LEFT JOIN sales s ON si.sale_id = s.id AND (s.status IS NULL OR s.status != 'cancelado')
       LEFT JOIN categories c ON p.category_id = c.id
       WHERE p.is_active = 1
       GROUP BY p.id
@@ -793,7 +894,7 @@ ipcMain.handle("add-stock", async (event, { productId, quantity, cost }) => {
       "INSERT INTO stock_movements (product_id, type, quantity, cost, notes) VALUES (?, 'in', ?, ?, ?)",
     ).run(productId, quantity, effectiveCost, "Compra de inventario");
 
-    // Register the cost as an expense in the open cash register
+    // Register the cost as an expense (even if no cash register is open)
     const todayMX = new Date().toLocaleDateString("en-CA", {
       timeZone: "America/Mexico_City",
     });
@@ -802,13 +903,15 @@ ipcMain.handle("add-stock", async (event, { productId, quantity, cost }) => {
         "SELECT id FROM cash_register WHERE date = ? AND status = 'open'",
       )
       .get(todayMX);
-    if (openReg && effectiveCost > 0) {
-      db.prepare(
-        "UPDATE cash_register SET expenses = COALESCE(expenses, 0) + ? WHERE id = ?",
-      ).run(effectiveCost, openReg.id);
+    if (effectiveCost > 0) {
+      if (openReg) {
+        db.prepare(
+          "UPDATE cash_register SET expenses = COALESCE(expenses, 0) + ? WHERE id = ?",
+        ).run(effectiveCost, openReg.id);
+      }
       db.prepare(
         "INSERT INTO cash_register_expenses (register_id, amount, reason) VALUES (?, ?, ?)",
-      ).run(openReg.id, effectiveCost, `Compra de inventario: ${product.name}`);
+      ).run(openReg ? openReg.id : null, effectiveCost, `Compra de inventario: ${product.name}`);
     }
 
     return { productName: product.name };
@@ -914,7 +1017,7 @@ ipcMain.handle(
       const saleId = saleInfo.lastInsertRowid;
 
       const itemStmt = db.prepare(
-        "INSERT INTO sale_items (sale_id, product_id, product_name, quantity, price_at_sale, discount_percent) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO sale_items (sale_id, product_id, product_name, quantity, price_at_sale, discount_percent, stock_deducted) VALUES (?, ?, ?, ?, ?, ?, ?)",
       );
       const stockStmt = db.prepare(
         "UPDATE products SET stock = stock - ? WHERE id = ?",
@@ -926,6 +1029,12 @@ ipcMain.handle(
         const isManual = item.isManual || typeof item.id !== "number";
         const productId = isManual ? null : item.id;
         const productName = item.name || (isManual ? "Producto manual" : null);
+        let stockDeducted = 0;
+        if (!isManual) {
+          stockDeducted = item.isBoxItem
+            ? item.quantity * (item.box_qty || 1)
+            : item.quantity;
+        }
         itemStmt.run(
           saleId,
           productId,
@@ -933,12 +1042,10 @@ ipcMain.handle(
           item.quantity,
           item.finalPrice || item.price,
           item.discount_percent || 0,
+          stockDeducted,
         );
         if (!isManual) {
-          const qty = item.isBoxItem
-            ? item.quantity * (item.box_qty || 1)
-            : item.quantity;
-          stockStmt.run(qty, item.id);
+          stockStmt.run(stockDeducted, item.id);
         }
       }
       return { success: true, saleId };
@@ -946,6 +1053,61 @@ ipcMain.handle(
 
     try {
       return recordSale();
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  },
+);
+
+ipcMain.handle(
+  "cancel-sale",
+  async (event, { saleId, cashierName, reason }) => {
+    try {
+      if (!saleId) return { success: false, error: "Venta inválida" };
+      const sale = db.prepare("SELECT * FROM sales WHERE id = ?").get(saleId);
+      if (!sale) return { success: false, error: "Venta no encontrada" };
+      if (sale.status === "cancelado")
+        return { success: false, error: "Esta venta ya fue cancelada" };
+
+      const today = new Date().toISOString().slice(0, 10);
+      const reg = db
+        .prepare("SELECT date, status FROM cash_register WHERE id = ?")
+        .get(sale.register_id);
+      if (!reg || reg.status !== "open" || reg.date !== today)
+        return {
+          success: false,
+          error: "Solo puedes cancelar ventas de la caja abierta de hoy",
+        };
+
+      const doCancel = db.transaction(() => {
+        db.prepare(
+          "UPDATE sales SET status='cancelado', cancelled_at=CURRENT_TIMESTAMP, cancelled_by=? WHERE id=?",
+        ).run(cashierName || null, saleId);
+        const items = db
+          .prepare(
+            "SELECT product_id, stock_deducted FROM sale_items WHERE sale_id = ?",
+          )
+          .all(saleId);
+        const restoreStmt = db.prepare(
+          "UPDATE products SET stock = stock + ? WHERE id = ?",
+        );
+        const movStmt = db.prepare(
+          "INSERT INTO stock_movements (product_id, type, quantity, reference, notes) VALUES (?, 'in', ?, ?, ?)",
+        );
+        for (const it of items) {
+          if (it.product_id && (it.stock_deducted || 0) > 0) {
+            restoreStmt.run(it.stock_deducted, it.product_id);
+            movStmt.run(
+              it.product_id,
+              it.stock_deducted,
+              `Cancelación venta #${saleId}`,
+              reason || "",
+            );
+          }
+        }
+      });
+      doCancel();
+      return { success: true };
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -999,13 +1161,20 @@ ipcMain.handle("get-sales-by-range", async (event, { startDate, endDate }) => {
         "SELECT * FROM sales WHERE created_at >= ? AND created_at < ? ORDER BY created_at DESC",
       )
       .all(start, end);
-    const total = sales.reduce((sum, s) => sum + s.total, 0);
+    const total = db
+      .prepare(
+        "SELECT COALESCE(SUM(total),0) as total FROM sales WHERE created_at >= ? AND created_at < ? AND (status IS NULL OR status != 'cancelado')",
+      )
+      .get(start, end).total;
+    const count = sales.filter(
+      (s) => s.status !== "cancelado",
+    ).length;
     const byMethod = db
       .prepare(
-        "SELECT payment_method, COUNT(*) as count, SUM(total) as total FROM sales WHERE created_at >= ? AND created_at < ? GROUP BY payment_method",
+        "SELECT payment_method, COUNT(*) as count, SUM(total) as total FROM sales WHERE created_at >= ? AND created_at < ? AND (status IS NULL OR status != 'cancelado') GROUP BY payment_method",
       )
       .all(start, end);
-    return { success: true, sales, total, count: sales.length, byMethod };
+    return { success: true, sales, total, count, byMethod };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -1037,13 +1206,20 @@ ipcMain.handle("get-sales-by-date", async (event, { date }) => {
         "SELECT * FROM sales WHERE created_at >= ? AND created_at < ? ORDER BY created_at DESC",
       )
       .all(start, end);
-    const total = sales.reduce((sum, s) => sum + s.total, 0);
+    const total = db
+      .prepare(
+        "SELECT COALESCE(SUM(total),0) as total FROM sales WHERE created_at >= ? AND created_at < ? AND (status IS NULL OR status != 'cancelado')",
+      )
+      .get(start, end).total;
+    const count = sales.filter(
+      (s) => s.status !== "cancelado",
+    ).length;
     const byMethod = db
       .prepare(
-        "SELECT payment_method, COUNT(*) as count, SUM(total) as total FROM sales WHERE created_at >= ? AND created_at < ? GROUP BY payment_method",
+        "SELECT payment_method, COUNT(*) as count, SUM(total) as total FROM sales WHERE created_at >= ? AND created_at < ? AND (status IS NULL OR status != 'cancelado') GROUP BY payment_method",
       )
       .all(start, end);
-    return { success: true, sales, total, count: sales.length, byMethod };
+    return { success: true, sales, total, count, byMethod };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -1062,7 +1238,7 @@ ipcMain.handle(
           `
       SELECT e.*, cr.name as register_name
       FROM cash_register_expenses e
-      JOIN cash_register cr ON e.register_id = cr.id
+      LEFT JOIN cash_register cr ON e.register_id = cr.id
       WHERE e.created_at >= ? AND e.created_at <= ?
       ORDER BY e.created_at DESC
     `,
@@ -1087,7 +1263,7 @@ ipcMain.handle("get-expenses-by-date", async (event, { date }) => {
         `
       SELECT e.*, cr.name as register_name
       FROM cash_register_expenses e
-      JOIN cash_register cr ON e.register_id = cr.id
+      LEFT JOIN cash_register cr ON e.register_id = cr.id
       WHERE e.created_at >= ? AND e.created_at <= ?
       ORDER BY e.created_at DESC
     `,
@@ -1365,7 +1541,7 @@ ipcMain.handle(
       // Get today's sales by payment method (only for this register)
       const sales = db
         .prepare(
-          "SELECT payment_method, SUM(total) as total FROM sales WHERE date(created_at) = ? AND register_id = ? GROUP BY payment_method",
+          "SELECT payment_method, SUM(total) as total FROM sales WHERE date(created_at) = ? AND register_id = ? AND (status IS NULL OR status != 'cancelado') GROUP BY payment_method",
         )
         .all(today, register.id);
       const cashSales =
@@ -1412,9 +1588,9 @@ ipcMain.handle(
       SELECT cr.*,
         opener.name AS opener_name,
         closer.name AS closer_name,
-        (SELECT COUNT(*) FROM sales WHERE register_id = cr.id) as sale_count,
-        (SELECT COALESCE(SUM(si.quantity), 0) FROM sale_items si JOIN sales s ON si.sale_id = s.id WHERE s.register_id = cr.id) as total_items,
-        (SELECT COALESCE(SUM(s.total), 0) FROM sales s WHERE s.register_id = cr.id) as total_sales
+        (SELECT COUNT(*) FROM sales WHERE register_id = cr.id AND (status IS NULL OR status != 'cancelado')) as sale_count,
+        (SELECT COALESCE(SUM(si.quantity), 0) FROM sale_items si JOIN sales s ON si.sale_id = s.id WHERE s.register_id = cr.id AND (s.status IS NULL OR s.status != 'cancelado')) as total_items,
+        (SELECT COALESCE(SUM(s.total), 0) FROM sales s WHERE s.register_id = cr.id AND (s.status IS NULL OR s.status != 'cancelado')) as total_sales
       FROM cash_register cr
       LEFT JOIN cashiers opener ON cr.opened_by = opener.id
       LEFT JOIN cashiers closer ON cr.closed_by = closer.id
@@ -1493,7 +1669,7 @@ ipcMain.handle("get-register-sales-detail", async (event, registerId) => {
     const items = db
       .prepare(
         `
-      SELECT si.*, COALESCE(p.name, si.product_name) AS product_name, p.barcode, s.created_at as sale_created_at
+      SELECT si.*, s.status, COALESCE(p.name, si.product_name) AS product_name, p.barcode, s.created_at as sale_created_at
       FROM sale_items si
       JOIN sales s ON si.sale_id = s.id
       LEFT JOIN products p ON si.product_id = p.id
@@ -1509,9 +1685,11 @@ ipcMain.handle("get-register-sales-detail", async (event, registerId) => {
       )
       .all(registerId);
 
-    const totalSales = sales.reduce((sum, s) => sum + s.total, 0);
-    const totalItems = items.reduce((sum, i) => sum + i.quantity, 0);
-    const saleCount = sales.length;
+    const activeSales = sales.filter((s) => s.status !== "cancelado");
+    const activeItems = items.filter((i) => i.status !== "cancelado");
+    const totalSales = activeSales.reduce((sum, s) => sum + s.total, 0);
+    const totalItems = activeItems.reduce((sum, i) => sum + i.quantity, 0);
+    const saleCount = activeSales.length;
     const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
 
     return {
@@ -1544,7 +1722,7 @@ ipcMain.handle("get-weekly-sales", async (event, { weeks = 12 }) => {
                 SUM(total) as total,
                 COUNT(*) as count
          FROM sales
-         WHERE created_at >= ?
+         WHERE created_at >= ? AND (status IS NULL OR status != 'cancelado')
          GROUP BY week_key
          ORDER BY week_key ASC`,
       )
@@ -1565,7 +1743,7 @@ ipcMain.handle("get-daily-sales-week", async (event, { startDate, endDate }) => 
                 SUM(total) as total,
                 COUNT(*) as count
          FROM sales
-         WHERE created_at >= ? AND created_at < ?
+         WHERE created_at >= ? AND created_at < ? AND (status IS NULL OR status != 'cancelado')
          GROUP BY DATE(created_at)
          ORDER BY date ASC`,
       )
@@ -1586,7 +1764,7 @@ ipcMain.handle("get-weekly-sales-range", async (event, { startDate, endDate }) =
                 SUM(total) as total,
                 COUNT(*) as count
          FROM sales
-         WHERE created_at >= ? AND created_at < ?
+         WHERE created_at >= ? AND created_at < ? AND (status IS NULL OR status != 'cancelado')
          GROUP BY week_key
          ORDER BY week_key ASC`,
       )
@@ -1782,7 +1960,7 @@ const psContinuousScript = (port, baud) => `
     if ($data.Length -gt 0) {
       Write-Output $data
     }
-    Start-Sleep -Milliseconds 200
+    Start-Sleep -Milliseconds 50
   }
 `;
 

@@ -45,8 +45,10 @@ import {
   PointOfSale,
   Store,
   MonitorWeight,
+  Percent,
 } from "@mui/icons-material";
 import CancelButton from "./CancelButton";
+import { useNavigate } from "react-router-dom";
 
 const scanMove = keyframes`
   0% { left: -30%; }
@@ -56,6 +58,7 @@ const scanMove = keyframes`
 
 const SalesTerminal = () => {
   const { cashier } = useCashier();
+  const navigate = useNavigate();
   const [barcode, setBarcode] = useState("");
   const [cart, setCart] = useState([]);
   const [total, setTotal] = useState(0);
@@ -77,6 +80,7 @@ const SalesTerminal = () => {
   const [storeSettings, setStoreSettings] = useState({
     name: "MI TIENDA POS",
     website: "www.mitienda.com",
+    logo: "",
   });
   const [isSearching, setIsSearching] = useState(false);
   const [searchTimedOut, setSearchTimedOut] = useState(false);
@@ -89,10 +93,16 @@ const SalesTerminal = () => {
     open: false,
     product: null,
   });
+  const [discountDialog, setDiscountDialog] = useState({
+    open: false,
+    item: null,
+  });
+  const [discountValue, setDiscountValue] = useState("");
   const [printing, setPrinting] = useState(false);
   const searchTimeoutRef = useRef(null);
   const cartRef = useRef(cart);
   const lastEscRef = useRef(0);
+  const lastDiscountItemIdRef = useRef(null);
   const theme = useTheme();
   const isDark = theme.palette.mode === "dark";
   const isLargeScreen = useMediaQuery(theme.breakpoints.up("lg"));
@@ -125,23 +135,34 @@ const SalesTerminal = () => {
       setChange(0);
       setBarcode("");
       showNotification("Venta registrada exitosamente", "success");
-      setPrinting(true);
       try {
-        const text = generateReceiptHTML(method);
-        const printResult = await window.api.invoke("print-receipt", text);
-        if (printResult.success && (method === "card" || method === "transfer")) {
-          const setting = await window.api.invoke("get-setting", "print_two_tickets");
-          if (setting === "true") {
-            await window.api.invoke("print-receipt", generateReceiptHTML(method));
+        const printEnabled = await window.api.invoke("get-setting", "print_enabled");
+        if (printEnabled === "false") {
+          window.api
+            .invoke("open-cash-drawer")
+            .catch((e) => console.error("[DRAWER]", e));
+          return;
+        }
+        setPrinting(true);
+        try {
+          const text = generateReceiptHTML(method);
+          const printResult = await window.api.invoke("print-receipt", text);
+          if (printResult.success && (method === "card" || method === "transfer")) {
+            const setting = await window.api.invoke("get-setting", "print_two_tickets");
+            if (setting === "true") {
+              await window.api.invoke("print-receipt", generateReceiptHTML(method));
+            }
           }
+          if (!printResult.success) {
+            console.error("[PRINT]", printResult.error);
+          }
+        } catch (e) {
+          console.error("[PRINT]", e);
         }
-        if (!printResult.success) {
-          console.error("[PRINT]", printResult.error);
-        }
+        setPrinting(false);
       } catch (e) {
         console.error("[PRINT]", e);
       }
-      setPrinting(false);
     } else {
       showNotification(result.error || "Error al registrar la venta", "error");
     }
@@ -152,12 +173,22 @@ const SalesTerminal = () => {
       try {
         const name = await window.api.invoke("get-setting", "store_name");
         const website = await window.api.invoke("get-setting", "store_website");
+        const logo = await window.api.invoke("get-setting", "store_logo");
         if (name)
           setStoreSettings((prev) => ({ ...prev, name: name.toUpperCase() }));
         if (website) setStoreSettings((prev) => ({ ...prev, website }));
+        if (logo) setStoreSettings((prev) => ({ ...prev, logo }));
       } catch (e) {}
     };
     loadSettings();
+
+    const handleSettingsUpdated = (event) => {
+      const { storeName, storeLogo } = event.detail || {};
+      if (storeName) setStoreSettings((prev) => ({ ...prev, name: storeName.toUpperCase() }));
+      if (typeof storeLogo === "string") setStoreSettings((prev) => ({ ...prev, logo: storeLogo }));
+    };
+    window.addEventListener("storeSettingsUpdated", handleSettingsUpdated);
+    return () => window.removeEventListener("storeSettingsUpdated", handleSettingsUpdated);
   }, []);
 
   useEffect(() => {
@@ -210,6 +241,46 @@ const SalesTerminal = () => {
           removeFromCart(lastItem.id);
         }
       }
+      if (e.key === "F6") {
+        e.preventDefault();
+        const eligible = cartRef.current.filter(
+          (i) => i.has_discount && i.discount_percent <= 0,
+        );
+        if (eligible.length === 0) {
+          showNotification(
+            "No hay productos con descuento manual en el carrito",
+            "info",
+          );
+          return;
+        }
+        const currentIdx = eligible.findIndex(
+          (i) => i.id === lastDiscountItemIdRef.current,
+        );
+        const next = currentIdx === -1 ? 0 : (currentIdx + 1) % eligible.length;
+        const target = eligible[next];
+        lastDiscountItemIdRef.current = target.id;
+        setDiscountValue(
+          target.discount > 0 ? String(target.discount.toFixed(2)) : "",
+        );
+        setDiscountDialog({ open: true, item: target });
+      }
+      if (e.key === "F11") {
+        e.preventDefault();
+        if (cartRef.current.length > 0) {
+          showNotification(
+            "Termina la venta actual antes de cerrar la caja",
+            "warning",
+          );
+          return;
+        }
+        localStorage.setItem("eodPendingAction", "close-register");
+        navigate("/end-of-day");
+      }
+      if (e.key === "F10") {
+        e.preventDefault();
+        localStorage.setItem("eodPendingAction", "withdraw");
+        navigate("/end-of-day");
+      }
       if (e.key === "Escape" && document.activeElement?.id !== "barcode-input") {
         e.preventDefault();
         const now = Date.now();
@@ -223,7 +294,7 @@ const SalesTerminal = () => {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [paymentMethod]);
+  }, [paymentMethod, navigate]);
 
   useEffect(() => {
     const sub = cart.reduce((s, item) => s + item.price * item.quantity, 0);
@@ -371,6 +442,7 @@ const SalesTerminal = () => {
     }
     setWeightDialog({ open: false, product: null });
     setWeightAmount("");
+    refocusBarcode();
     showNotification(
       `${kg.toFixed(3)} kg de ${product.name} agregado`,
       "success",
@@ -400,6 +472,7 @@ const SalesTerminal = () => {
       setCart([...cart, item]);
     }
     setBoxChoiceDialog({ open: false, product: null });
+    refocusBarcode();
     showNotification(
       `${isBox ? "Caja" : "Pieza"} de ${product.name} agregado`,
       "success",
@@ -460,6 +533,7 @@ const SalesTerminal = () => {
         price: parseFloat(manualProduct.price),
         finalPrice: parseFloat(manualProduct.price),
         discount_percent: 0,
+        has_discount: 0,
         barcode: "SIN CÓDIGO",
         stock: 999,
         isManual: true,
@@ -467,7 +541,14 @@ const SalesTerminal = () => {
       addProductToCart(newProduct);
       setManualProduct({ name: "", price: "" });
       setManualProductModalOpen(false);
+      refocusBarcode();
     }
+  };
+
+  const refocusBarcode = () => {
+    setTimeout(() => {
+      document.getElementById("barcode-input")?.focus();
+    }, 150);
   };
 
   const updateQuantity = (productId, delta, isWeight) => {
@@ -477,9 +558,14 @@ const SalesTerminal = () => {
           if (item.id === productId) {
             const step = isWeight ? 0.1 : item.isBoxItem ? 1 : 1;
             const newQty = item.quantity + delta * step;
-            return newQty <= 0
-              ? null
-              : { ...item, quantity: Math.min(newQty, item.stock || 999) };
+            if (newQty <= 0) return null;
+            const qty = Math.min(newQty, item.stock || 999);
+            const disc = item.discount || 0;
+            const fp =
+              disc > 0 && qty > 0
+                ? (item.price * qty - disc) / qty
+                : item.finalPrice;
+            return { ...item, quantity: qty, finalPrice: fp };
           }
           return item;
         })
@@ -490,6 +576,48 @@ const SalesTerminal = () => {
   const removeFromCart = (productId) => {
     setCart((prev) => prev.filter((item) => item.id !== productId));
     showNotification("Producto eliminado del carrito", "info");
+  };
+
+  const applyDiscount = (productId, amount) => {
+    setCart((prev) =>
+      prev.map((item) => {
+        if (item.id !== productId) return item;
+        const qty = item.quantity || 1;
+        const max = item.price * qty;
+        const discount = Math.min(Math.max(parseFloat(amount) || 0, 0), max);
+        const fp = discount > 0 ? (item.price * qty - discount) / qty : item.price;
+        return { ...item, discount, finalPrice: fp };
+      }),
+    );
+  };
+
+  const clearDiscount = (productId) => {
+    setCart((prev) =>
+      prev.map((item) => {
+        if (item.id !== productId) return item;
+        const fp =
+          item.discount_percent > 0
+            ? calcFinalPrice(item.price, item.discount_percent)
+            : item.price;
+        return { ...item, discount: 0, finalPrice: fp };
+      }),
+    );
+  };
+
+  const openDiscountDialog = (item) => {
+    lastDiscountItemIdRef.current = item.id;
+    setDiscountValue(item.discount > 0 ? String(item.discount.toFixed(2)) : "");
+    setDiscountDialog({ open: true, item });
+  };
+
+  const handleDiscountApply = () => {
+    const item = discountDialog.item;
+    if (!item) return;
+    const amount = parseFloat(discountValue);
+    const max = item.price * item.quantity;
+    if (isNaN(amount) || amount <= 0 || amount > max) return;
+    applyDiscount(item.id, discountValue);
+    setDiscountDialog({ open: false, item: null });
   };
 
   const handlePayClick = (method) => {
@@ -505,6 +633,11 @@ const SalesTerminal = () => {
     const ticketNum = Date.now().toString().slice(-6);
     const lines = [];
 
+    if (storeSettings.logo) {
+      lines.push(
+        `<div style="text-align:center;margin-bottom:4px"><img src="${storeSettings.logo}" style="height:100px;max-width:48mm;object-fit:contain"/></div>`,
+      );
+    }
     lines.push(
       `<div style="text-align:center;font-weight:bold;font-size:15px">${storeSettings.name}</div>`,
     );
@@ -545,6 +678,10 @@ const SalesTerminal = () => {
         lines.push(
           `<div style="text-align:center;font-size:10px;color:red">Descuento: -${item.discount_percent}%</div>`,
         );
+      if (item.discount > 0)
+        lines.push(
+          `<div style="text-align:center;font-size:10px;color:red">Descuento: -$${item.discount.toFixed(2)}</div>`,
+        );
       lines.push(
         `<div style="border-bottom:1px dotted #ccc;margin:3px 0"></div>`,
       );
@@ -554,7 +691,7 @@ const SalesTerminal = () => {
     lines.push(
       `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Subtotal:</span><span>$${subtotal.toFixed(2)}</span></div>`,
     );
-    if (cart.some((i) => i.discount_percent > 0))
+    if (cart.some((i) => i.discount_percent > 0 || i.discount > 0))
       lines.push(
         `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Descuentos:</span><span>-$${(subtotal - total).toFixed(2)}</span></div>`,
       );
@@ -741,9 +878,17 @@ const SalesTerminal = () => {
                             sx={{ ml: 0.5, height: 16, fontSize: "0.55rem" }}
                           />
                         )}
+                        {item.discount > 0 && (
+                          <Chip
+                            label={`-$${item.discount.toFixed(2)}`}
+                            color="error"
+                            size="small"
+                            sx={{ ml: 0.5, height: 16, fontSize: "0.55rem" }}
+                          />
+                        )}
                       </Box>
                       <Typography variant="caption" color="textSecondary">
-                        {item.discount_percent > 0 ? (
+                        {item.discount_percent > 0 || item.discount > 0 ? (
                           <>
                             <span style={{ textDecoration: "line-through" }}>
                               ${item.price.toFixed(2)}
@@ -805,6 +950,27 @@ const SalesTerminal = () => {
                     >
                       ${(fp * item.quantity).toFixed(2)}
                     </Typography>
+                    {!!item.has_discount && item.discount_percent <= 0 && (
+                      <IconButton
+                        size="small"
+                        onClick={() => openDiscountDialog(item)}
+                        sx={{
+                          width: 28,
+                          height: 28,
+                          color:
+                            item.discount > 0
+                              ? "error.main"
+                              : "text.secondary",
+                          bgcolor:
+                            item.discount > 0
+                              ? "rgba(239,68,68,0.1)"
+                              : "transparent",
+                        }}
+                        title="Descuento del producto"
+                      >
+                        <Percent sx={{ fontSize: 16 }} />
+                      </IconButton>
+                    )}
                     <IconButton
                       size="small"
                       onClick={() => removeFromCart(item.id)}
@@ -1110,7 +1276,10 @@ const SalesTerminal = () => {
                 {[
                   ["F1", "Ayuda"],
                   ["F2", "Sin código"],
+                  ["F6", "Descuento"],
                   ["F8", "Vender"],
+                  ["F10", "Retiro"],
+                  ["F11", "Cerrar caja"],
                 ].map(([key, label]) => (
                   <Chip
                     key={key}
@@ -1323,7 +1492,10 @@ const SalesTerminal = () => {
 
       <Dialog
         open={weightDialog.open}
-        onClose={() => setWeightDialog({ open: false, product: null })}
+        onClose={() => {
+          setWeightDialog({ open: false, product: null });
+          refocusBarcode();
+        }}
         maxWidth="xs"
         fullWidth
         onKeyDown={(e) => {
@@ -1438,8 +1610,131 @@ const SalesTerminal = () => {
       </Dialog>
 
       <Dialog
+        open={discountDialog.open}
+        onClose={() => setDiscountDialog({ open: false, item: null })}
+        maxWidth="xs"
+        fullWidth
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && e.target.tagName !== "BUTTON") {
+            e.preventDefault();
+            handleDiscountApply();
+          }
+        }}
+        PaperProps={{ sx: { borderRadius: "12px" } }}
+      >
+        <DialogTitle component="div" sx={{ pb: 1 }}>
+          <Typography component="div" variant="h6" sx={{ fontWeight: 700 }}>
+            Descuento del producto
+          </Typography>
+          <Typography component="span" variant="body2" color="textSecondary">
+            {discountDialog.item?.name}
+          </Typography>
+        </DialogTitle>
+        <DialogContent>
+          {discountDialog.item && (
+            <Box sx={{ py: 1 }}>
+              <TextField
+                fullWidth
+                label="Monto a descontar ($)"
+                type="number"
+                value={discountValue}
+                onChange={(e) => setDiscountValue(e.target.value)}
+                autoFocus
+                inputProps={{ min: 0, step: 0.01 }}
+                slotProps={{
+                  input: {
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <AttachMoney sx={{ fontSize: 18, color: "#64748b" }} />
+                      </InputAdornment>
+                    ),
+                  },
+                }}
+                sx={{ mb: 2 }}
+              />
+              <Box
+                sx={{
+                  p: 2,
+                  borderRadius: 2,
+                  background: isDark
+                    ? "rgba(16, 185, 129, 0.1)"
+                    : "rgba(16, 185, 129, 0.06)",
+                  border: `1px solid ${isDark ? "rgba(16, 185, 129, 0.2)" : "rgba(16, 185, 129, 0.15)"}`,
+                  textAlign: "center",
+                }}
+              >
+                <Typography variant="caption" color="text.secondary">
+                  Subtotal: $
+                  {(discountDialog.item.price * discountDialog.item.quantity).toFixed(2)}
+                </Typography>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: "block", mb: 0.5 }}
+                >
+                  Precio final:
+                </Typography>
+                <Typography
+                  variant="h4"
+                  sx={{ fontWeight: 800, color: theme.palette.success.main }}
+                >
+                  $
+                  {(
+                    discountDialog.item.price * discountDialog.item.quantity -
+                    Math.min(
+                      Math.max(parseFloat(discountValue) || 0, 0),
+                      discountDialog.item.price * discountDialog.item.quantity,
+                    )
+                  ).toFixed(2)}
+                </Typography>
+              </Box>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ p: 2.5, justifyContent: "space-between" }}>
+          <Box>
+            {discountDialog.item?.discount > 0 && (
+              <Button
+                onClick={() => {
+                  clearDiscount(discountDialog.item.id);
+                  setDiscountDialog({ open: false, item: null });
+                }}
+                variant="outlined"
+                sx={{ color: "error.main", borderColor: "error.main" }}
+              >
+                Quitar descuento
+              </Button>
+            )}
+          </Box>
+          <Box sx={{ display: "flex", gap: 1 }}>
+            <CancelButton
+              onClick={() => setDiscountDialog({ open: false, item: null })}
+            >
+              Cancelar
+            </CancelButton>
+            <Button
+              onClick={handleDiscountApply}
+              variant="contained"
+              disabled={
+                !discountDialog.item ||
+                !discountValue ||
+                parseFloat(discountValue) <= 0 ||
+                parseFloat(discountValue) >
+                  discountDialog.item.price * discountDialog.item.quantity
+              }
+            >
+              Aplicar
+            </Button>
+          </Box>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
         open={boxChoiceDialog.open}
-        onClose={() => setBoxChoiceDialog({ open: false, product: null })}
+        onClose={() => {
+          setBoxChoiceDialog({ open: false, product: null });
+          refocusBarcode();
+        }}
         maxWidth="xs"
         fullWidth
         onKeyDown={(e) => {
@@ -1660,7 +1955,10 @@ const SalesTerminal = () => {
 
       <Dialog
         open={manualProductModalOpen}
-        onClose={() => setManualProductModalOpen(false)}
+        onClose={() => {
+          setManualProductModalOpen(false);
+          refocusBarcode();
+        }}
         maxWidth="sm"
         fullWidth
         onKeyDown={(e) => {
@@ -1703,7 +2001,12 @@ const SalesTerminal = () => {
           </Stack>
         </DialogContent>
         <DialogActions sx={{ p: 2.5 }}>
-          <CancelButton onClick={() => setManualProductModalOpen(false)}>
+          <CancelButton
+            onClick={() => {
+              setManualProductModalOpen(false);
+              refocusBarcode();
+            }}
+          >
             Cancelar
           </CancelButton>
           <Button

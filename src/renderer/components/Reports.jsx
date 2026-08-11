@@ -46,6 +46,11 @@ const Reports = () => {
   const [dayExpenses, setDayExpenses] = useState(null);
   const [dayLoading, setDayLoading] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [calendarData, setCalendarData] = useState({
+    dailySales: {}, dailyExpenses: {}, salesTotal: 0, salesCount: 0,
+    expensesTotal: 0, expensesCount: 0, profit: 0, prevSales: 0, prevExpenses: 0,
+  });
+  const [calendarLoading, setCalendarLoading] = useState(false);
   const [expenses, setExpenses] = useState([]);
   const [totalExpenses, setTotalExpenses] = useState(0);
   const [expensesCount, setExpensesCount] = useState(0);
@@ -124,6 +129,82 @@ const Reports = () => {
 
   const prevMonth = () => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() - 1, 1));
   const nextMonth = () => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 1));
+  const goToday = () => {
+    const now = new Date();
+    setCalendarDate(new Date(now.getFullYear(), now.getMonth(), 1));
+  };
+
+  const fmtMoney = (n) => `$${Number(n || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const pctOf = (cur, prev) => (prev === 0 ? (cur > 0 ? 100 : 0) : ((cur - prev) / prev) * 100);
+
+  const Delta = ({ value, invert }) => {
+    const up = value >= 0;
+    const good = invert ? !up : up;
+    const color = good ? theme.palette.success.main : theme.palette.error.main;
+    return (
+      <Typography component="span" sx={{ fontSize: "0.7rem", fontWeight: 700, color, display: "inline-flex", alignItems: "center", gap: 0.25 }}>
+        {up ? "▲" : "▼"} {Math.abs(Math.round(value))}% vs mes anterior
+      </Typography>
+    );
+  };
+
+  const fetchCalendarMonth = useCallback(async (refDate) => {
+    const year = refDate.getFullYear();
+    const month = refDate.getMonth();
+    const monthStart = new Date(year, month, 1).toISOString().slice(0, 10);
+    const monthEnd = new Date(year, month + 1, 0).toISOString().slice(0, 10);
+    const monthEndPlus = new Date(year, month + 1, 1).toISOString().slice(0, 10);
+    const prev = new Date(year, month - 1, 1);
+    const prevStart = new Date(prev.getFullYear(), prev.getMonth(), 1).toISOString().slice(0, 10);
+    const prevEnd = new Date(prev.getFullYear(), prev.getMonth() + 1, 0).toISOString().slice(0, 10);
+
+    setCalendarLoading(true);
+    const [salesRes, expRes, prevSalesRes, prevExpRes] = await Promise.all([
+      window.api.invoke("get-daily-sales-week", { startDate: monthStart, endDate: monthEndPlus }),
+      window.api.invoke("get-expenses-by-range", { startDate: monthStart, endDate: monthEnd }),
+      window.api.invoke("get-sales-by-range", { startDate: prevStart, endDate: prevEnd }),
+      window.api.invoke("get-expenses-by-range", { startDate: prevStart, endDate: prevEnd }),
+    ]);
+
+    const dailySales = {};
+    let salesTotal = 0;
+    let salesCount = 0;
+    if (salesRes.success) {
+      (salesRes.rows || []).forEach((r) => {
+        const t = Number(r.total) || 0;
+        dailySales[r.date] = { total: t, count: Number(r.count) || 0 };
+        salesTotal += t;
+        salesCount += Number(r.count) || 0;
+      });
+    }
+    const dailyExpenses = {};
+    let expensesTotal = 0;
+    let expensesCount = 0;
+    if (expRes.success) {
+      (expRes.expenses || []).forEach((e) => {
+        const dk = (e.created_at || "").slice(0, 10);
+        dailyExpenses[dk] = (dailyExpenses[dk] || 0) + (Number(e.amount) || 0);
+        expensesTotal += Number(e.amount) || 0;
+        expensesCount += 1;
+      });
+    }
+    setCalendarData({
+      dailySales,
+      dailyExpenses,
+      salesTotal,
+      salesCount,
+      expensesTotal,
+      expensesCount,
+      profit: salesTotal - expensesTotal,
+      prevSales: prevSalesRes.success ? prevSalesRes.total || 0 : 0,
+      prevExpenses: prevExpRes.success ? prevExpRes.totalExpenses || 0 : 0,
+    });
+    setCalendarLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (calendarOpen) fetchCalendarMonth(calendarDate);
+  }, [calendarOpen, calendarDate, fetchCalendarMonth]);
 
   const renderCalendar = () => {
     const year = calendarDate.getFullYear();
@@ -131,32 +212,70 @@ const Reports = () => {
     const firstDayOfMonth = new Date(year, month, 1).getDay();
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     const today = mxToday();
-    const todayDateNum = parseInt(today.split("-")[2]);
 
     const cells = [];
     for (let i = 0; i < firstDayOfMonth; i++) {
-      cells.push(<Box key={`empty-${i}`} sx={{ width: "calc(100% / 7)", height: 46 }} />);
+      cells.push(<Box key={`empty-${i}`} sx={{ minHeight: 84 }} />);
     }
     for (let d = 1; d <= daysInMonth; d++) {
       const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
       const isToday = dateStr === today;
       const isSelected = dateStr === selectedDay;
+      const sTotal = calendarData.dailySales[dateStr]?.total || 0;
+      const eTotal = calendarData.dailyExpenses[dateStr] || 0;
+      const fmtCell = (n) => `$${Number(n).toLocaleString("es-MX", { maximumFractionDigits: 0 })}`;
       cells.push(
         <Box
           key={d}
           onClick={() => handleDayClick(d)}
           sx={{
-            width: "calc(100% / 7)", height: 46,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            borderRadius: 2, cursor: "pointer", fontSize: "0.95rem", fontWeight: isToday ? 800 : 500,
-            color: isSelected ? "white" : isToday ? theme.palette.primary.main : "text.primary",
-            bgcolor: isSelected ? theme.palette.primary.main : isToday ? "transparent" : "transparent",
-            border: isToday && !isSelected ? `2px solid ${theme.palette.primary.main}` : "2px solid transparent",
+            minHeight: 84, borderRadius: 2, p: 0.75, cursor: "pointer",
+            display: "flex", flexDirection: "column", alignItems: "stretch",
+            border: "1px solid",
+            borderColor: isSelected || isToday ? theme.palette.primary.main : "divider",
+            borderWidth: isSelected || isToday ? 2 : 1,
+            bgcolor: isSelected ? "rgba(59,130,246,0.16)" : isToday ? "rgba(59,130,246,0.08)" : "background.paper",
             transition: "all 0.15s",
-            "&:hover": { bgcolor: isSelected ? theme.palette.primary.dark : isDark ? "rgba(59,130,246,0.12)" : "rgba(37,99,235,0.08)" },
+            "&:hover": { bgcolor: "rgba(59,130,246,0.16)", borderColor: theme.palette.primary.main },
           }}
         >
-          {d}
+          <Box sx={{ display: "flex", justifyContent: "center", mb: 0.25 }}>
+            <Box sx={{
+              width: 24, height: 24, borderRadius: "50%",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              bgcolor: isToday ? theme.palette.primary.main : "transparent",
+              border: isSelected && !isToday ? `2px solid ${theme.palette.primary.main}` : "2px solid transparent",
+            }}>
+              <Typography sx={{ fontSize: "0.8rem", lineHeight: 1, fontWeight: 800, color: isToday ? "#fff" : isSelected ? theme.palette.primary.main : "text.primary" }}>
+                {d}
+              </Typography>
+            </Box>
+          </Box>
+          <Box sx={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: 0.35 }}>
+            {sTotal > 0 && (
+              <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, minWidth: 0 }}>
+                <Box sx={{ width: 13, height: 13, borderRadius: "4px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", bgcolor: theme.palette.success.main }}>
+                  <Typography sx={{ fontSize: "0.55rem", color: "#fff", fontWeight: 800, lineHeight: 1 }}>S</Typography>
+                </Box>
+                <Typography sx={{ fontSize: "0.62rem", lineHeight: 1.2, fontWeight: 700, color: theme.palette.success.main, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {fmtCell(sTotal)}
+                </Typography>
+              </Box>
+            )}
+            {eTotal > 0 && (
+              <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, minWidth: 0 }}>
+                <Box sx={{ width: 13, height: 13, borderRadius: "4px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", bgcolor: theme.palette.error.main }}>
+                  <Typography sx={{ fontSize: "0.55rem", color: "#fff", fontWeight: 800, lineHeight: 1 }}>E</Typography>
+                </Box>
+                <Typography sx={{ fontSize: "0.62rem", lineHeight: 1.2, fontWeight: 700, color: theme.palette.error.main, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {fmtCell(eTotal)}
+                </Typography>
+              </Box>
+            )}
+            {sTotal === 0 && eTotal === 0 && (
+              <Typography sx={{ fontSize: "0.62rem", lineHeight: 1.2, color: "text.disabled", textAlign: "center" }}>—</Typography>
+            )}
+          </Box>
         </Box>
       );
     }
@@ -171,7 +290,7 @@ const Reports = () => {
   const exportCSV = () => {
     if (sales.length === 0) return;
     const header = "ID Venta,Fecha,Total,Método de Pago\n";
-    const rows = sales.map(s =>
+    const rows = sales.filter((s) => s.status !== "cancelado").map(s =>
       `${s.id},"${new Date(s.created_at).toLocaleString()}",${s.total.toFixed(2)},${s.payment_method}`
     ).join("\n");
     const blob = new Blob(["\uFEFF" + header + rows], { type: "text/csv;charset=utf-8;" });
@@ -222,7 +341,7 @@ const Reports = () => {
       <table><tr><th>Método</th><th>Ventas</th><th>Total</th></tr>${byMethodHtml}</table>` : ""}
       <div class="section-title">Ventas del Período</div>
       <table><tr><th>#</th><th>Fecha</th><th>Método</th><th>Total</th></tr>
-      ${sales.map(s => `<tr><td>#${s.id}</td><td>${new Date(s.created_at).toLocaleString("es-MX")}</td><td>${methodNames[s.payment_method] || s.payment_method}</td><td align="right">$${s.total.toFixed(2)}</td></tr>`).join("")}
+      ${sales.filter((s) => s.status !== "cancelado").map(s => `<tr><td>#${s.id}</td><td>${new Date(s.created_at).toLocaleString("es-MX")}</td><td>${methodNames[s.payment_method] || s.payment_method}</td><td align="right">$${s.total.toFixed(2)}</td></tr>`).join("")}
       <tr class="total-row"><td colspan="3">TOTAL</td><td align="right">$${total.toFixed(2)}</td></tr>
       </table>
       <div class="footer">Generado el ${now.toLocaleString("es-MX")} — JRP POS</div>
@@ -312,7 +431,7 @@ const Reports = () => {
     doc.line(margin, yy, pageW - margin, yy);
     yy += 4;
     const tableHeaders = [["#", "Fecha", "Método", "Total"]];
-    const tableData = sales.map((s) => [
+    const tableData = sales.filter((s) => s.status !== "cancelado").map((s) => [
       `#${s.id}`,
       formatMXDate(s.created_at),
       s.payment_method === "cash" ? "Efectivo" : s.payment_method === "card" ? "Tarjeta" : "Transferencia",
@@ -454,170 +573,215 @@ const Reports = () => {
         <Box sx={{ flex: 1 }} />
       </Box>
 
-      {/* ── Calendar open: stats left, calendar center, day sales right ── */}
+      {/* ── Calendar open: resumen mensual + calendario + detalle diario ── */}
       {calendarOpen ? (
-        <Box sx={{ display: "flex", gap: 3, alignItems: "stretch", justifyContent: "center" }}>
-          {/* Left: stacked stats */}
-          <Box sx={{ width: 270, flexShrink: 0, display: "flex", flexDirection: "column" }}>
-            {selectedDay && dayLoading ? (
-              <CardSkeleton count={3} />
-            ) : (
-              <Card sx={{ flex: 1, display: "flex", flexDirection: "column", p: 2 }}>
-                <Stack spacing={1.5} sx={{ flex: 1, justifyContent: "center" }}>
-                  <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none" }}>
-                    <CardContent sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 1.5, px: 2, "&:last-child": { pb: 1.5 } }}>
-                      <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(16, 185, 129, 0.12)" }}>
-                        <AttachMoney sx={{ fontSize: 22, color: theme.palette.success.main }} />
-                      </Box>
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.55rem", lineHeight: 1.2 }}>{selectedDay ? "Total del día" : "Ventas Totales"}</Typography>
-                        <Typography variant="h6" sx={{ fontWeight: 700, color: "text.primary", fontSize: "1rem", lineHeight: 1.1 }}>${(selectedDay && daySales ? daySales.total : total).toFixed(2)}</Typography>
-                      </Box>
-                    </CardContent>
-                  </Card>
-                  <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none" }}>
-                    <CardContent sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 1.5, px: 2, "&:last-child": { pb: 1.5 } }}>
-                      <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(59, 130, 246, 0.12)" }}>
-                        <ShoppingCart sx={{ fontSize: 22, color: theme.palette.primary.main }} />
-                      </Box>
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.55rem", lineHeight: 1.2 }}>{selectedDay ? "Transacciones del día" : "Transacciones"}</Typography>
-                        <Typography variant="h6" sx={{ fontWeight: 700, color: "text.primary", fontSize: "1rem", lineHeight: 1.1 }}>{selectedDay && daySales ? daySales.count : count}</Typography>
-                      </Box>
-                    </CardContent>
-                  </Card>
-                  <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none" }}>
-                    <CardContent sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 1.5, px: 2, "&:last-child": { pb: 1.5 } }}>
-                      <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(245, 158, 11, 0.12)" }}>
-                        <TrendingUp sx={{ fontSize: 22, color: theme.palette.warning.main }} />
-                      </Box>
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.55rem", lineHeight: 1.2 }}>{selectedDay ? "Promedio del día" : "Ticket Promedio"}</Typography>
-                        <Typography variant="h6" sx={{ fontWeight: 700, color: "text.primary", fontSize: "1rem", lineHeight: 1.1 }}>${selectedDay && daySales ? (daySales.count > 0 ? daySales.total / daySales.count : 0).toFixed(2) : avg.toFixed(2)}</Typography>
-                      </Box>
-                    </CardContent>
-                  </Card>
-                  {selectedDay && (
-                    <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none" }}>
-                      <CardContent sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 1.5, px: 2, "&:last-child": { pb: 1.5 } }}>
-                        <Box sx={{ width: 44, height: 44, borderRadius: "12px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(239, 68, 68, 0.12)" }}>
-                          <MoneyOff sx={{ fontSize: 22, color: theme.palette.error.main }} />
-                        </Box>
-                        <Box sx={{ minWidth: 0 }}>
-                          <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.55rem", lineHeight: 1.2 }}>Gastos del día</Typography>
-                          <Typography variant="h6" sx={{ fontWeight: 700, color: "text.primary", fontSize: "1rem", lineHeight: 1.1 }}>${(dayExpenses?.totalExpenses || 0).toFixed(2)}</Typography>
-                        </Box>
-                      </CardContent>
-                    </Card>
-                  )}
-                  {(() => {
-                    const methods = selectedDay && daySales ? (daySales.byMethod || []) : byMethod;
-                    return methods.length > 0 && (
-                      <Stack spacing={1}>
-                        <Typography variant="caption" color="textSecondary" sx={{ fontWeight: 600, textAlign: "center" }}>Por método de pago:</Typography>
-                        {methods.map((m) => (
-                          <Chip key={m.payment_method}
-                            icon={methodIcons[m.payment_method] || <AttachMoney />}
-                            label={`${methodLabels[m.payment_method] || m.payment_method}: $${Number(m.total).toFixed(2)}`}
-                            variant="outlined" color="primary" size="small"
-                          />
-                        ))}
-                      </Stack>
-                    );
-                  })()}
-                </Stack>
-              </Card>
-            )}
-          </Box>
-
-          {/* Center: Calendar */}
-          <Card sx={{ flex: "0 1 480px", p: 2.5, display: "flex", flexDirection: "column" }}>
-            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2 }}>
+        <Box>
+          {/* Header: nav de mes + Hoy + cerrar */}
+          <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2, flexWrap: "wrap", gap: 1 }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
               <IconButton onClick={prevMonth} size="small"><ChevronLeft /></IconButton>
-              <Typography variant="h5" sx={{ fontWeight: 700, fontSize: "1.2rem" }}>
+              <Typography variant="h4" sx={{ fontWeight: 700, fontSize: "1.3rem", minWidth: 210, textAlign: "center" }}>
                 {MONTHS[calendarDate.getMonth()]} {calendarDate.getFullYear()}
               </Typography>
               <IconButton onClick={nextMonth} size="small"><ChevronRight /></IconButton>
+              <Button size="small" variant="outlined" onClick={goToday} sx={{ ml: 1, borderRadius: 2 }}>
+                Hoy
+              </Button>
             </Box>
             <IconButton size="small" onClick={() => { setCalendarOpen(false); setSelectedDay(null); }}
-              sx={{ alignSelf: "flex-end", mb: 1, border: "1px solid", borderColor: "divider", borderRadius: "8px", color: "#3b82f6", "&:hover": { bgcolor: "#eff6ff" } }}>
+              sx={{ border: "1px solid", borderColor: "divider", borderRadius: "8px", color: "text.secondary", "&:hover": { bgcolor: "action.hover" } }}>
               <Close sx={{ fontSize: 18 }} />
             </IconButton>
-            <Box sx={{ display: "flex", flexWrap: "wrap", flex: 1, alignContent: "flex-start" }}>
-              {DAYS.map((d) => (
-                <Box key={d} sx={{ width: "calc(100% / 7)", textAlign: "center", fontSize: "0.8rem", fontWeight: 700, color: "text.secondary", mb: 0.5, py: 0.5 }}>
-                  {d}
-                </Box>
-              ))}
-              {renderCalendar()}
-            </Box>
-          </Card>
+          </Box>
 
-          {/* Right: day sales list */}
-          <Box sx={{ width: 340, flexShrink: 0, display: "flex", flexDirection: "column" }}>
-            {selectedDay && !dayLoading && daySales ? (
-              <Card sx={{ flex: 1, display: "flex", flexDirection: "column" }}>
-                <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", p: 2, pb: 0 }}>
-                  <Typography variant="h6" sx={{ fontWeight: 700, fontSize: "0.95rem" }}>
-                    <Receipt sx={{ fontSize: 16, mr: 0.5, verticalAlign: "middle" }} />
-                    Detalle del {selectedDay.split('-').reverse().join('/')}
-                  </Typography>
-                  <IconButton size="small" onClick={() => setSelectedDay(null)}>
-                    <Close fontSize="small" />
-                  </IconButton>
-                </Box>
-                <Divider sx={{ mb: 1, mt: 1 }} />
-                <Box sx={{ flex: 1, overflow: "auto", p: 1 }}>
-                  {(() => {
-                    const items = [
-                      ...(daySales?.sales || []).map(s => ({
-                        id: `sale-${s.id}`, type: "sale",
-                        title: `Venta #${s.id}`,
-                        desc: methodLabels[s.payment_method] || s.payment_method,
-                        time: s.created_at, amount: s.total,
-                      })),
-                      ...(dayExpenses?.expenses || []).map(e => ({
-                        id: `exp-${e.id}`, type: "expense",
-                        title: e.reason.startsWith("Compra") ? "Compra de inventario" : "Retiro de efectivo",
-                        desc: e.reason,
-                        time: e.created_at, amount: -e.amount,
-                      })),
-                    ].sort((a, b) => new Date(a.time) - new Date(b.time));
-
-                    if (items.length === 0) {
-                      return (
-                        <Box sx={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", opacity: 0.5, py: 4 }}>
-                          <Receipt sx={{ fontSize: 36, color: "text.secondary", mb: 1 }} />
-                          <Typography color="textSecondary" variant="body2">Sin movimientos en este día</Typography>
+          {calendarLoading ? (
+            <CardSkeleton count={3} />
+          ) : (
+            <>
+              {/* Resumen mensual */}
+              <Grid container spacing={2} sx={{ mb: 2 }}>
+                <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                  <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none", borderRadius: 2, height: "100%" }}>
+                    <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, p: 2, "&:last-child": { pb: 2 } }}>
+                      <Box sx={{ width: 48, height: 48, borderRadius: "14px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(16,185,129,0.12)", flexShrink: 0 }}>
+                        <AttachMoney sx={{ fontSize: 24, color: theme.palette.success.main }} />
+                      </Box>
+                      <Box sx={{ minWidth: 0, flex: 1 }}>
+                        <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.62rem" }}>Ventas del Mes</Typography>
+                        <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.15 }}>{fmtMoney(calendarData.salesTotal)}</Typography>
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                          <Typography variant="caption" color="textSecondary">{calendarData.salesCount} ventas</Typography>
+                          <Delta value={pctOf(calendarData.salesTotal, calendarData.prevSales)} invert={false} />
                         </Box>
-                      );
-                    }
-                    return items.map((item) => (
-                      <Card key={item.id} sx={{ mb: 1, p: 1.5, borderLeft: `4px solid ${item.type === "sale" ? theme.palette.success.main : theme.palette.error.main}` }}>
-                        <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      </Box>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                  <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none", borderRadius: 2, height: "100%" }}>
+                    <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, p: 2, "&:last-child": { pb: 2 } }}>
+                      <Box sx={{ width: 48, height: 48, borderRadius: "14px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(239,68,68,0.12)", flexShrink: 0 }}>
+                        <MoneyOff sx={{ fontSize: 24, color: theme.palette.error.main }} />
+                      </Box>
+                      <Box sx={{ minWidth: 0, flex: 1 }}>
+                        <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.62rem" }}>Gastos del Mes</Typography>
+                        <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.15 }}>{fmtMoney(calendarData.expensesTotal)}</Typography>
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                          <Typography variant="caption" color="textSecondary">{calendarData.expensesCount} gastos</Typography>
+                          <Delta value={pctOf(calendarData.expensesTotal, calendarData.prevExpenses)} invert />
+                        </Box>
+                      </Box>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+                  <Card sx={{ bgcolor: theme.palette.primary.main, color: "#fff", borderRadius: 2, boxShadow: "0 8px 24px rgba(37,99,235,0.35)", height: "100%" }}>
+                    <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, p: 2, "&:last-child": { pb: 2 } }}>
+                      <Box sx={{ width: 48, height: 48, borderRadius: "14px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.16)", flexShrink: 0 }}>
+                        <TrendingUp sx={{ fontSize: 24 }} />
+                      </Box>
+                      <Box sx={{ minWidth: 0, flex: 1 }}>
+                        <Typography variant="caption" sx={{ fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.62rem", opacity: 0.9 }}>Utilidad Neta</Typography>
+                        <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.15 }}>{fmtMoney(calendarData.profit)}</Typography>
+                        <Typography variant="caption" sx={{ opacity: 0.85 }}>Ventas − Gastos del mes</Typography>
+                      </Box>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              </Grid>
+
+              {/* Leyenda */}
+              <Box sx={{ display: "flex", alignItems: "center", gap: 2, mb: 1.5 }}>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+                  <Box sx={{ width: 13, height: 13, borderRadius: "4px", display: "flex", alignItems: "center", justifyContent: "center", bgcolor: theme.palette.success.main }}>
+                    <Typography sx={{ fontSize: "0.55rem", color: "#fff", fontWeight: 800, lineHeight: 1 }}>S</Typography>
+                  </Box>
+                  <Typography variant="caption" color="textSecondary">Ventas</Typography>
+                </Box>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+                  <Box sx={{ width: 13, height: 13, borderRadius: "4px", display: "flex", alignItems: "center", justifyContent: "center", bgcolor: theme.palette.error.main }}>
+                    <Typography sx={{ fontSize: "0.55rem", color: "#fff", fontWeight: 800, lineHeight: 1 }}>E</Typography>
+                  </Box>
+                  <Typography variant="caption" color="textSecondary">Gastos</Typography>
+                </Box>
+              </Box>
+
+              {/* Calendario + detalle del día */}
+              <Box sx={{ display: "flex", gap: 3, alignItems: "stretch" }}>
+                <Card sx={{ flex: 1, minWidth: 0, p: 2.5, display: "flex", flexDirection: "column" }}>
+                  <Box sx={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 0.5, flex: 1, alignContent: "start" }}>
+                    {DAYS.map((d) => (
+                      <Box key={d} sx={{ textAlign: "center", fontSize: "0.78rem", fontWeight: 700, color: "text.secondary", py: 0.5 }}>
+                        {d}
+                      </Box>
+                    ))}
+                    {renderCalendar()}
+                  </Box>
+                </Card>
+
+                <Card sx={{ width: 340, flexShrink: 0, display: "flex", flexDirection: "column" }}>
+                  {selectedDay ? (
+                    <>
+                      <Box sx={{ p: 2, pb: 1.5 }}>
+                        <Box sx={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
                           <Box>
-                            <Typography variant="body2" sx={{ fontWeight: 600 }}>{item.title}</Typography>
-                            <Typography variant="caption" color="textSecondary">{formatMXTime(item.time)} — {item.desc}</Typography>
-                          </Box>
-                          <Box sx={{ textAlign: "right" }}>
-                            <Typography variant="body2" sx={{ fontWeight: 700, color: item.type === "sale" ? theme.palette.success.main : "error.main" }}>
-                              {item.type === "sale" ? "+" : "-"}${Math.abs(item.amount).toFixed(2)}
+                            <Typography variant="h6" sx={{ fontWeight: 700, fontSize: "1rem" }}>Reporte del día</Typography>
+                            <Typography variant="caption" color="textSecondary">
+                              {formatMXDate(`${selectedDay}T12:00:00`, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
                             </Typography>
                           </Box>
+                          <IconButton size="small" onClick={() => setSelectedDay(null)}>
+                            <Close fontSize="small" />
+                          </IconButton>
                         </Box>
-                      </Card>
-                    ));
-                  })()}
-                </Box>
-              </Card>
-            ) : selectedDay && dayLoading ? (
-              <Box sx={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <Typography color="textSecondary">Cargando...</Typography>
+                        <Grid container spacing={1} sx={{ mt: 1 }}>
+                          <Grid size={{ xs: 6 }}>
+                            <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none" }}>
+                              <CardContent sx={{ py: 1.5, px: 1.5, "&:last-child": { pb: 1.5 } }}>
+                                <Typography variant="caption" sx={{ color: theme.palette.success.main, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.55rem" }}>Ingresos</Typography>
+                                <Typography variant="h6" sx={{ fontWeight: 700, fontSize: "0.95rem", lineHeight: 1.2 }}>
+                                  {fmtMoney(daySales ? daySales.total : (calendarData.dailySales[selectedDay]?.total || 0))}
+                                </Typography>
+                              </CardContent>
+                            </Card>
+                          </Grid>
+                          <Grid size={{ xs: 6 }}>
+                            <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none" }}>
+                              <CardContent sx={{ py: 1.5, px: 1.5, "&:last-child": { pb: 1.5 } }}>
+                                <Typography variant="caption" sx={{ color: theme.palette.error.main, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.55rem" }}>Gastos</Typography>
+                                <Typography variant="h6" sx={{ fontWeight: 700, fontSize: "0.95rem", lineHeight: 1.2 }}>
+                                  {fmtMoney(dayExpenses ? dayExpenses.totalExpenses : (calendarData.dailyExpenses[selectedDay] || 0))}
+                                </Typography>
+                              </CardContent>
+                            </Card>
+                          </Grid>
+                        </Grid>
+                      </Box>
+                      <Divider />
+                      <Box sx={{ flex: 1, overflow: "auto", p: 1.5 }}>
+                        {dayLoading ? (
+                          <CardSkeleton count={3} />
+                        ) : (() => {
+                          const items = [
+                            ...(daySales?.sales || []).map(s => ({
+                              id: `sale-${s.id}`, type: "sale", saleId: s.id,
+                              title: `Venta #${s.id}`,
+                              desc: methodLabels[s.payment_method] || s.payment_method,
+                              time: s.created_at, amount: s.total,
+                            })),
+                            ...(dayExpenses?.expenses || []).map(e => ({
+                              id: `exp-${e.id}`, type: "expense", saleId: null,
+                              title: e.reason.startsWith("Compra") ? "Compra de inventario" : "Retiro de efectivo",
+                              desc: e.reason,
+                              time: e.created_at, amount: -e.amount,
+                            })),
+                          ].sort((a, b) => new Date(a.time) - new Date(b.time));
+
+                          if (items.length === 0) {
+                            return (
+                              <Box sx={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", opacity: 0.5, py: 4, textAlign: "center" }}>
+                                <Receipt sx={{ fontSize: 36, color: "text.secondary", mb: 1 }} />
+                                <Typography color="textSecondary" variant="body2">Sin movimientos en este día</Typography>
+                              </Box>
+                            );
+                          }
+                          return items.map((item) => (
+                            <Card
+                              key={item.id}
+                              onClick={() => item.type === "sale" && viewDetails(item.saleId)}
+                              sx={{
+                                mb: 1, p: 1.25, borderLeft: `4px solid ${item.type === "sale" ? theme.palette.success.main : theme.palette.error.main}`,
+                                cursor: item.type === "sale" ? "pointer" : "default",
+                                transition: "all 0.15s",
+                                "&:hover": item.type === "sale" ? { bgcolor: isDark ? "rgba(59,130,246,0.14)" : "rgba(37,99,235,0.06)" } : {},
+                              }}
+                            >
+                              <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 1 }}>
+                                <Box sx={{ minWidth: 0 }}>
+                                  <Typography variant="body2" sx={{ fontWeight: 600 }}>{item.title}</Typography>
+                                  <Typography variant="caption" color="textSecondary" sx={{ display: "block" }}>
+                                    {formatMXTime(item.time)} — {item.desc}
+                                  </Typography>
+                                </Box>
+                                <Typography variant="body2" sx={{ fontWeight: 700, color: item.type === "sale" ? theme.palette.success.main : theme.palette.error.main, whiteSpace: "nowrap" }}>
+                                  {item.type === "sale" ? "+" : "−"}{fmtMoney(Math.abs(item.amount))}
+                                </Typography>
+                              </Box>
+                            </Card>
+                          ));
+                        })()}
+                      </Box>
+                    </>
+                  ) : (
+                    <Box sx={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", gap: 1, opacity: 0.5, p: 3, textAlign: "center" }}>
+                      <CalendarMonthOutlined sx={{ fontSize: 44, color: "text.secondary" }} />
+                      <Typography color="textSecondary" variant="body2">Selecciona un día en el calendario<br />para ver su detalle</Typography>
+                    </Box>
+                  )}
+                </Card>
               </Box>
-            ) : (
-              <Box />
-            )}
-          </Box>
+            </>
+          )}
         </Box>
       ) : (
         /* ── Calendar closed ── */
@@ -871,8 +1035,10 @@ const Reports = () => {
                                   <TableCell sx={{ py: 1.5 }}>
                                     <Typography variant="body2" sx={{ fontWeight: 600, fontSize: "0.8rem" }}>Venta #{s.id}</Typography>
                                     <Box sx={{ display: "inline-flex", alignItems: "center", gap: 0.3, mt: 0.3 }}>
-                                      <Box sx={{ width: 5, height: 5, borderRadius: "50%", bgcolor: "success.main" }} />
-                                      <Typography variant="caption" color="success.main" sx={{ fontSize: "0.6rem", fontWeight: 700, textTransform: "uppercase" }}>Completado</Typography>
+                                      <Box sx={{ width: 5, height: 5, borderRadius: "50%", bgcolor: s.status === "cancelado" ? "error.main" : "success.main" }} />
+                                      <Typography variant="caption" sx={{ fontSize: "0.6rem", fontWeight: 700, textTransform: "uppercase", color: s.status === "cancelado" ? "error.main" : "success.main" }}>
+                                        {s.status === "cancelado" ? "Cancelado" : "Completado"}
+                                      </Typography>
                                     </Box>
                                   </TableCell>
                                   <TableCell sx={{ py: 1.5 }}>
@@ -890,7 +1056,9 @@ const Reports = () => {
                                     </Tooltip>
                                   </TableCell>
                                   <TableCell align="right" sx={{ py: 1.5 }}>
-                                    <Typography variant="body2" sx={{ fontWeight: 700, fontSize: "0.85rem", color: "success.main" }}>+${s.total.toFixed(2)}</Typography>
+                                    <Typography variant="body2" sx={{ fontWeight: 700, fontSize: "0.85rem", color: s.status === "cancelado" ? "text.secondary" : "success.main", textDecoration: s.status === "cancelado" ? "line-through" : "none" }}>
+                                      {s.status === "cancelado" ? "-" : "+"}${s.total.toFixed(2)}
+                                    </Typography>
                                   </TableCell>
                                   <TableCell align="center" sx={{ py: 1.5 }}>
                                     <Button size="small" variant="text" onClick={() => viewDetails(s.id)}
@@ -948,7 +1116,7 @@ const Reports = () => {
                                           </Typography>
                                         </Box>
                                       </TableCell>
-                                      <TableCell sx={{ py: 1.5, fontSize: "0.8rem" }}>{e.register_name || `#${e.register_id}`}</TableCell>
+                                      <TableCell sx={{ py: 1.5, fontSize: "0.8rem" }}>{e.register_name || (e.register_id ? `#${e.register_id}` : "Sin caja")}</TableCell>
                                       <TableCell align="right" sx={{ py: 1.5 }}>
                                         <Typography variant="body2" sx={{ fontWeight: 700, fontSize: "0.85rem", color: "error.main" }}>-${Number(e.amount).toFixed(2)}</Typography>
                                       </TableCell>
@@ -984,6 +1152,11 @@ const Reports = () => {
             <Box>
               <Typography variant="body2" color="textSecondary">
                 {formatMXDateTime(saleDetail.sale.created_at)} — {methodLabels[saleDetail.sale.payment_method] || saleDetail.sale.payment_method}
+                {saleDetail.sale.status === "cancelado" && (
+                  <Typography component="span" variant="caption" color="error" sx={{ fontWeight: 700, ml: 1 }}>
+                    · CANCELADO
+                  </Typography>
+                )}
               </Typography>
               {saleDetail.sale.discount_total > 0 && (
                 <Typography variant="caption" color="error" sx={{ display: "block", mt: 1 }}>

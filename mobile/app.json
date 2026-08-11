@@ -20,8 +20,7 @@
       "package": "com.tienda.posmovil",
       "adaptiveIcon": {
         "backgroundColor": "#1e3a5f",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "foregroundImage": "./assets/android-icon-foreground.png"
       },
       "permissions": [
         "android.permission.CAMERA"

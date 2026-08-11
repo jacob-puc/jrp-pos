@@ -123,14 +123,15 @@ const startServer = (db, port = 3456) => {
       VALUES (?, 'in', ?, ?, 'App móvil', ?)
     `).run(id, quantity, costValue, notes || "Movil");
 
-    // Register cost as expense in open cash register
+    // Register cost as expense (even if no cash register is open)
     if (costValue > 0) {
       const todayMX = new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
       const openReg = db.prepare("SELECT id FROM cash_register WHERE date = ? AND status = 'open'").get(todayMX);
       if (openReg) {
         db.prepare("UPDATE cash_register SET expenses = COALESCE(expenses, 0) + ? WHERE id = ?").run(costValue, openReg.id);
-        db.prepare("INSERT INTO cash_register_expenses (register_id, amount, reason) VALUES (?, ?, ?)").run(openReg.id, costValue, `Compra de inventario: ${product.name}`);
       }
+      db.prepare("INSERT INTO cash_register_expenses (register_id, amount, reason) VALUES (?, ?, ?)")
+        .run(openReg ? openReg.id : null, costValue, `Compra de inventario: ${product.name}`);
     }
 
     const updated = db.prepare("SELECT id, barcode, name, price, stock, cost_price, sale_unit, category_id, min_stock, box_qty, box_price FROM products WHERE id = ?").get(id);
