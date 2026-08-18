@@ -7,11 +7,13 @@ import SetupModal from "./components/SetupModal";
 import AddProductModal from "./components/AddProductModal";
 import LoginScreen from "./components/LoginScreen";
 import PageSkeleton from "./components/PageSkeleton";
+import ToastProvider from "./components/ToastProvider";
 
 const Layout = React.lazy(() => import("./components/Layout"));
 const SalesTerminal = React.lazy(() => import("./components/SalesTerminal"));
 const Inventory = React.lazy(() => import("./components/Inventory"));
 const EndOfDay = React.lazy(() => import("./components/EndOfDay"));
+const RegisterHistory = React.lazy(() => import("./components/RegisterHistory"));
 const Suppliers = React.lazy(() => import("./components/Suppliers"));
 const StockMovements = React.lazy(() => import("./components/StockMovements"));
 const Reports = React.lazy(() => import("./components/Reports"));
@@ -91,7 +93,7 @@ const createModernTheme = (mode) => {
             },
             '& ::-webkit-scrollbar-thumb': {
               background: 'linear-gradient(180deg, #2563eb, #3b82f6)',
-              borderRadius: '3px',
+              borderRadius: '4px',
             },
             '& ::-webkit-scrollbar-thumb:hover': {
               background: 'linear-gradient(180deg, #1d4ed8, #2563eb)',
@@ -109,7 +111,7 @@ const createModernTheme = (mode) => {
             backgroundImage: "none",
             backgroundColor: isDark ? "rgba(17, 24, 39, 0.85)" : "rgba(255, 255, 255, 0.9)",
             border: `1px solid ${isDark ? "rgba(59, 130, 246, 0.1)" : "rgba(37, 99, 235, 0.12)"}`,
-            borderRadius: "16px",
+            borderRadius: "12px",
             backdropFilter: "blur(16px)",
           },
         },
@@ -173,11 +175,11 @@ const createModernTheme = (mode) => {
               },
               "&.Mui-focused": {
                 boxShadow: isDark
-                  ? "0 0 0 3px rgba(148, 163, 184, 0.15)"
-                  : "0 0 0 3px rgba(100, 116, 139, 0.12)",
+                  ? "0 0 0 3px rgba(59, 130, 246, 0.15)"
+                  : "0 0 0 3px rgba(37, 99, 235, 0.12)",
               },
               "&.Mui-focused fieldset": {
-                borderColor: "#64748B",
+                borderColor: "#2563EB",
                 borderWidth: "2px",
               },
               "& input": {
@@ -188,7 +190,7 @@ const createModernTheme = (mode) => {
               fontWeight: 500,
               color: isDark ? "#94a3b8" : "#64748b",
               "&.Mui-focused": {
-                color: "#64748B",
+                color: "#2563EB",
                 fontWeight: 600,
               },
             },
@@ -203,10 +205,13 @@ const createModernTheme = (mode) => {
       MuiCard: {
         styleOverrides: {
           root: {
-            borderRadius: "16px",
+            borderRadius: "12px",
             background: isDark ? "rgba(17, 24, 39, 0.7)" : "rgba(255, 255, 255, 0.8)",
             border: `1px solid ${isDark ? "rgba(59, 130, 246, 0.1)" : "rgba(37, 99, 235, 0.1)"}`,
             backdropFilter: "blur(12px)",
+            boxShadow: isDark
+              ? "0 1px 3px rgba(15, 23, 42, 0.5)"
+              : "0 1px 3px rgba(30, 41, 59, 0.08)",
           },
         },
       },
@@ -246,10 +251,13 @@ const createModernTheme = (mode) => {
       MuiDialog: {
         styleOverrides: {
           paper: {
-            borderRadius: "20px",
-            background: isDark ? "rgba(17, 24, 39, 0.98)" : "rgba(255, 255, 255, 0.98)",
-            border: `1px solid ${isDark ? "rgba(59, 130, 246, 0.12)" : "rgba(37, 99, 235, 0.1)"}`,
-            boxShadow: isDark ? "0 25px 60px rgba(0, 0, 0, 0.5)" : "0 25px 60px rgba(0, 0, 0, 0.12)",
+            borderRadius: "12px",
+            background: isDark ? "#111827" : "#ffffff",
+            border: `1px solid ${isDark ? "rgba(59, 130, 246, 0.12)" : "rgba(226, 232, 240, 1)"}`,
+            boxShadow: isDark
+              ? "0 25px 60px rgba(0, 0, 0, 0.5)"
+              : "0 18px 50px rgba(15, 23, 42, 0.14)",
+            backdropFilter: "none",
           },
         },
       },
@@ -331,6 +339,7 @@ const AppInner = () => {
       const list = await window.api.invoke("get-cashiers");
       const admin = list.find((c) => c.role === "admin");
       if (admin) {
+        window.location.hash = "#/";
         setCashier({ id: admin.id, name: admin.name, role: admin.role });
         setLoggedIn(true);
       }
@@ -342,6 +351,7 @@ const AppInner = () => {
   };
 
   const handleLogin = (cashier) => {
+    window.location.hash = "#/";
     setLoggedIn(true);
     setCashier(cashier);
   };
@@ -364,7 +374,9 @@ const AppInner = () => {
       <ThemeModeContext.Provider value={colorMode}>
         <ThemeProvider theme={theme}>
           <CssBaseline />
-          {loadingScreen}
+          <ToastProvider>
+            {loadingScreen}
+          </ToastProvider>
         </ThemeProvider>
       </ThemeModeContext.Provider>
     );
@@ -375,8 +387,10 @@ const AppInner = () => {
       <ThemeModeContext.Provider value={colorMode}>
         <ThemeProvider theme={theme}>
           <CssBaseline />
-          <SetupModal open={showSetup} onComplete={handleSetupComplete} onClose={handleSetupClose} />
-          {!showSetup && <LoginScreen onLogin={handleLogin} />}
+          <ToastProvider>
+            <SetupModal open={showSetup} onComplete={handleSetupComplete} onClose={handleSetupClose} />
+            {!showSetup && <LoginScreen onLogin={handleLogin} />}
+          </ToastProvider>
         </ThemeProvider>
       </ThemeModeContext.Provider>
     );
@@ -384,28 +398,31 @@ const AppInner = () => {
 
   return (
     <ThemeModeContext.Provider value={colorMode}>
-      <ThemeProvider theme={theme}>
-        <CssBaseline />
-        <SetupModal open={showSetup} onComplete={handleSetupComplete} onClose={handleSetupClose} />
-        <AddProductModal open={showAddProduct} onClose={() => setShowAddProduct(false)} onProductAdded={() => setShowAddProduct(false)} />
-        <Suspense fallback={<PageSkeleton />}>
-          <HashRouter>
-            <Routes>
-              <Route path="/" element={<Layout />}>
-                <Route index element={<SalesTerminal />} />
-                <Route path="inventory" element={<Inventory />} />
-                <Route path="suppliers" element={<Suppliers />} />
-                <Route path="categories" element={<Categories />} />
-                <Route path="stock-movements" element={<StockMovements />} />
-                <Route path="end-of-day" element={<EndOfDay />} />
-                <Route path="reports" element={<Reports />} />
-                <Route path="backup" element={<BackupRestore />} />
-                <Route path="cashiers" element={<Cashiers />} />
-              </Route>
-            </Routes>
-          </HashRouter>
-        </Suspense>
-      </ThemeProvider>
+        <ThemeProvider theme={theme}>
+          <CssBaseline />
+          <ToastProvider>
+            <SetupModal open={showSetup} onComplete={handleSetupComplete} onClose={handleSetupClose} />
+            <AddProductModal open={showAddProduct} onClose={() => setShowAddProduct(false)} onProductAdded={() => setShowAddProduct(false)} />
+            <Suspense fallback={<PageSkeleton />}>
+              <HashRouter>
+                <Routes>
+                  <Route path="/" element={<Layout />}>
+                    <Route index element={<SalesTerminal />} />
+                    <Route path="inventory" element={<Inventory />} />
+                    <Route path="suppliers" element={<Suppliers />} />
+                    <Route path="categories" element={<Categories />} />
+                    <Route path="stock-movements" element={<StockMovements />} />
+                    <Route path="end-of-day" element={<EndOfDay />} />
+                    <Route path="register-history" element={<RegisterHistory />} />
+                    <Route path="reports" element={<Reports />} />
+                    <Route path="backup" element={<BackupRestore />} />
+                    <Route path="cashiers" element={<Cashiers />} />
+                  </Route>
+                  </Routes>
+              </HashRouter>
+            </Suspense>
+          </ToastProvider>
+        </ThemeProvider>
     </ThemeModeContext.Provider>
   );
 };

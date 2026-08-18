@@ -3,19 +3,39 @@ import {
   Box, Typography, Paper, Table, TableBody, TableCell, TableContainer,
   TableHead, TableRow, Button, IconButton, Dialog, DialogTitle,
   DialogContent, DialogActions, TextField, Chip, Stack, useTheme,
-  Alert, InputAdornment, Avatar,
+  Alert, InputAdornment, Avatar, Switch, FormHelperText,
 } from "@mui/material";
-import {
-  Person, Add, EditOutlined, DeleteOutlined, Lock, CheckCircle, Cancel,
-} from "@mui/icons-material";
+import { User, Plus, Pencil, Trash2, Lock, CheckCircle2 } from "lucide-react";
 import CancelButton from "./CancelButton";
 import { TableSkeleton } from "./Skeletons";
+
+const inputSx = {
+  "& .MuiOutlinedInput-root.MuiOutlinedInput-root": {
+    borderRadius: "6px",
+    "& fieldset": { borderRadius: "6px" },
+  },
+  "& .MuiInputBase-input::placeholder": { fontSize: "0.85rem" },
+};
+
+const FieldLabel = ({ children }) => (
+  <Typography
+    variant="caption"
+    sx={{
+      display: "block",
+      mb: 0.5,
+      fontWeight: 600,
+      color: "text.secondary",
+    }}
+  >
+    {children}
+  </Typography>
+);
 
 const Cashiers = () => {
   const [cashiers, setCashiers] = useState([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ name: "", pin: "" });
+  const [form, setForm] = useState({ name: "", pin: "", active: true });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const theme = useTheme();
@@ -34,7 +54,9 @@ const Cashiers = () => {
 
   const handleOpen = (cashier = null) => {
     setEditing(cashier);
-    setForm(cashier ? { name: cashier.name, pin: "" } : { name: "", pin: "" });
+    setForm(cashier
+      ? { name: cashier.name, pin: "", active: cashier.is_active === 1 }
+      : { name: "", pin: "", active: true });
     setError("");
     setDialogOpen(true);
   };
@@ -46,7 +68,12 @@ const Cashiers = () => {
 
     try {
       if (editing) {
-        const data = { name: form.name.trim(), pin: form.pin || editing.pin, role: "cashier", is_active: 1 };
+        const data = {
+          name: form.name.trim(),
+          pin: form.pin,
+          role: "cashier",
+          is_active: editing.role === "admin" ? 1 : (form.active ? 1 : 0),
+        };
         await window.api.invoke("update-cashier", editing.id, data);
       } else {
         await window.api.invoke("add-cashier", { name: form.name.trim(), pin: form.pin, role: "cashier" });
@@ -77,15 +104,15 @@ const Cashiers = () => {
             Gestiona los usuarios del sistema
           </Typography>
         </Box>
-        <Button variant="contained" startIcon={<Add />} onClick={() => handleOpen()}
-          sx={{ borderRadius: "10px", fontWeight: 600 }}>
+        <Button variant="contained" startIcon={<Plus size={18} />} onClick={() => handleOpen()}
+          sx={{ borderRadius: "6px", fontWeight: 600 }}>
           Nuevo Cajero
         </Button>
       </Stack>
 
       {loading ? <TableSkeleton rows={4} columns={4} /> : (
       <TableContainer component={Paper} sx={{
-        borderRadius: "14px",
+        borderRadius: "10px",
         border: `1px solid ${isDark ? "rgba(59,130,246,0.12)" : "rgba(37,99,235,0.1)"}`,
       }}>
         <Table>
@@ -106,7 +133,7 @@ const Cashiers = () => {
                       ? "linear-gradient(135deg, #234e8c 0%, #1a3b6e 100%)"
                       : (isDark ? "rgba(148,163,184,0.15)" : "rgba(100,116,139,0.12)"),
                     }}>
-                      <Person sx={{ fontSize: 18, color: c.role === "admin" ? "white" : undefined }} />
+                      <User size={18} color={c.role === "admin" ? "white" : undefined} />
                     </Avatar>
                     <Typography sx={{ fontWeight: 600 }}>{c.name}</Typography>
                   </Stack>
@@ -127,10 +154,10 @@ const Cashiers = () => {
                   {c.role !== "admin" && (
                     <>
                       <IconButton size="small" onClick={() => handleOpen(c)} sx={{ mr: 0.5 }}>
-                        <EditOutlined fontSize="small" />
+                        <Pencil size={18} />
                       </IconButton>
                       <IconButton size="small" color="error" onClick={() => handleDelete(c.id)}>
-                        <DeleteOutlined fontSize="small" />
+                        <Trash2 size={18} />
                       </IconButton>
                     </>
                   )}
@@ -144,30 +171,73 @@ const Cashiers = () => {
 
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="xs" fullWidth
         onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) handleSave(); }}
-        PaperProps={{ sx: { borderRadius: "16px" } }}>
+        PaperProps={{ sx: {
+          borderRadius: "6px",
+          boxShadow: isDark ? "0 20px 50px rgba(0,0,0,0.45)" : "0 15px 40px rgba(0,0,0,0.12)",
+        } }}>
         <DialogTitle sx={{ fontWeight: 700 }}>
           {editing ? "Editar Cajero" : "Nuevo Cajero"}
         </DialogTitle>
         <DialogContent>
           {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-          <TextField fullWidth label="Nombre" value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
-            sx={{ mb: 2, mt: 1 }} autoFocus
-            InputProps={{
-              startAdornment: <InputAdornment position="start"><Person fontSize="small" /></InputAdornment>,
-            }} />
-          <TextField fullWidth label="PIN de acceso" value={form.pin}
-            onChange={(e) => setForm({ ...form, pin: e.target.value.replace(/\D/g, "").slice(0, 6) })}
-            type="password" inputProps={{ maxLength: 6 }}
-            helperText={editing ? "Dejar vacío para mantener el actual" : "Mínimo 3 dígitos"}
-            InputProps={{
-              startAdornment: <InputAdornment position="start"><Lock fontSize="small" /></InputAdornment>,
-            }} />
+          <Box sx={{ mb: 2 }}>
+            <FieldLabel>Nombre</FieldLabel>
+            <TextField fullWidth value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              placeholder="Ej: Juan Pérez"
+              sx={inputSx}
+              autoFocus
+              slotProps={{
+                input: {
+                  startAdornment: <InputAdornment position="start" sx={{ display: "flex", alignItems: "center" }}><User size={18} color="#64748b" style={{ display: "block" }} /></InputAdornment>,
+                },
+              }} />
+          </Box>
+          <Box>
+            <FieldLabel>PIN de acceso</FieldLabel>
+            <TextField fullWidth value={form.pin}
+              onChange={(e) => setForm({ ...form, pin: e.target.value.replace(/\D/g, "").slice(0, 6) })}
+              type="password" inputProps={{ maxLength: 6 }}
+              placeholder={editing ? "••••••" : "Mínimo 3 dígitos"}
+              helperText={editing ? "Dejar vacío para mantener el actual" : "Mínimo 3 dígitos"}
+              sx={inputSx}
+              slotProps={{
+                input: {
+                  startAdornment: <InputAdornment position="start" sx={{ display: "flex", alignItems: "center" }}><Lock size={18} color="#64748b" style={{ display: "block" }} /></InputAdornment>,
+                },
+              }} />
+          </Box>
+          <Box sx={{ mt: 2.5, mb: 1 }}>
+            <Box sx={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              p: 1.5, borderRadius: "6px",
+              border: `1px solid ${isDark ? "rgba(59,130,246,0.15)" : "rgba(37,99,235,0.12)"}`,
+              background: isDark ? "rgba(59,130,246,0.04)" : "rgba(37,99,235,0.03)",
+            }}>
+              <Box>
+                <Typography sx={{ fontWeight: 600, fontSize: "0.9rem" }}>
+                  {form.active ? "Usuario activo" : "Usuario inactivo"}
+                </Typography>
+                <FormHelperText sx={{ m: 0, fontSize: "0.72rem" }}>
+                  {form.active
+                    ? "Podrá iniciar sesión en la app móvil"
+                    : "Bloqueado: no podrá acceder desde la app móvil"}
+                </FormHelperText>
+              </Box>
+              <Switch
+                checked={form.active}
+                onChange={(e) => setForm({ ...form, active: e.target.checked })}
+                disabled={editing?.role === "admin"}
+                sx={{ ml: 2 }}
+              />
+            </Box>
+          </Box>
         </DialogContent>
         <DialogActions sx={{ p: 2.5 }}>
           <CancelButton onClick={() => setDialogOpen(false)}>Cancelar</CancelButton>
           <Button onClick={handleSave} variant="contained"
-            startIcon={editing ? <CheckCircle /> : <Add />}>
+            sx={{ backgroundColor: "#234e8c", "&:hover": { backgroundColor: "#1a3b6e" } }}
+            startIcon={editing ? <CheckCircle2 size={18} /> : <Plus size={18} />}>
             {editing ? "Guardar" : "Agregar"}
           </Button>
         </DialogActions>

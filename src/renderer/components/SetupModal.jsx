@@ -123,7 +123,7 @@ const SetupModal = ({ open, onComplete, onClose }) => {
       PaperProps={{
         sx: {
           background: isDark ? "rgba(17, 24, 39, 0.98)" : "rgba(255, 255, 255, 0.98)",
-          borderRadius: "24px",
+          borderRadius: "12px",
           border: `1px solid ${isDark ? "rgba(59, 130, 246, 0.15)" : "rgba(37, 99, 235, 0.12)"}`,
           boxShadow: isDark ? "0 30px 80px rgba(30, 64, 175, 0.4)" : "0 30px 60px rgba(0, 0, 0, 0.1)",
           overflow: "visible",
@@ -220,7 +220,7 @@ const SetupModal = ({ open, onComplete, onClose }) => {
           background: isDark ? "rgba(30, 41, 59, 0.5)" : "rgba(255, 255, 255, 0.8)",
           border: `1px solid ${isDark ? "rgba(59, 130, 246, 0.12)" : "rgba(37, 99, 235, 0.1)"}`,
           backdropFilter: "blur(12px)",
-          borderRadius: "16px",
+          borderRadius: "12px",
         }}>
           <CardContent>
             {activeStep === 0 && (

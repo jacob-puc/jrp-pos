@@ -1,10 +1,18 @@
 const express = require("express");
 const crypto = require("crypto");
 
+const nomarize = (s) =>
+  (s == null ? "" : String(s))
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/ñ/g, "n")
+    .replace(/Ñ/g, "N")
+    .toLowerCase();
+
 let server = null;
 let activeTokens = {};
 
-const startServer = (db, port = 3456) => {
+const startServer = async (db, port = 3456) => {
   if (server) return { success: true, port };
 
   const app = express();
@@ -39,7 +47,7 @@ const startServer = (db, port = 3456) => {
   }));
 
   app.get("/api/cashiers", safe((req, res) => {
-    const cashiers = db.prepare("SELECT id, name, role FROM cashiers WHERE is_active = 1 ORDER BY name").all();
+    const cashiers = db.prepare("SELECT id, name, role, is_active FROM cashiers ORDER BY name").all();
     res.json({ success: true, cashiers });
   }));
 
@@ -55,13 +63,14 @@ const startServer = (db, port = 3456) => {
     const { q } = req.query;
     if (!q || q.trim().length < 1) return res.json({ success: true, products: [] });
 
-    const term = `%${q.trim()}%`;
+    const term = `%${nomarize(q.trim())}%`;
+    const rawTerm = `%${q.trim()}%`;
     const products = db.prepare(`
       SELECT id, barcode, name, price, stock, cost_price, sale_unit, min_stock, box_qty, box_price
       FROM products
-      WHERE (name LIKE ? OR barcode LIKE ?) AND is_active = 1
+      WHERE (nomar(name) LIKE ? OR barcode LIKE ?) AND is_active = 1
       ORDER BY name LIMIT 30
-    `).all(term, term);
+    `).all(term, rawTerm);
 
     res.json({ success: true, products });
   }));
@@ -86,6 +95,12 @@ const startServer = (db, port = 3456) => {
     const exists = db.prepare("SELECT id FROM products WHERE barcode = ?").get(barcode);
     if (exists) return res.status(409).json({ success: false, error: "Ya existe un producto con ese código" });
 
+    const stockNum = parseInt(stock) || 0;
+    const minStock =
+      parseInt(min_stock) > 0
+        ? parseInt(min_stock)
+        : Math.max(1, Math.floor(stockNum * 0.4));
+
     const result = db.prepare(`
       INSERT INTO products (barcode, name, cost_price, price, sale_unit, stock, category_id, min_stock, is_active, box_qty, box_price)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
@@ -95,9 +110,9 @@ const startServer = (db, port = 3456) => {
       cost_price || 0,
       price || 0,
       sale_unit || "piece",
-      parseInt(stock) || 0,
+      stockNum,
       category_id || null,
-      min_stock || 5,
+      minStock,
       parseInt(box_qty) || 0,
       parseFloat(box_price) || 0
     );
@@ -107,31 +122,56 @@ const startServer = (db, port = 3456) => {
   }));
 
   app.patch("/api/products/:id/stock", requireAuth, safe((req, res) => {
-    const { quantity, notes, cost } = req.body;
+    const { quantity, notes, cost, supplierId, registerExpense, updateCostPrice } = req.body;
     const id = parseInt(req.params.id);
     if (!quantity || quantity <= 0) return res.status(400).json({ success: false, error: "Cantidad inválida" });
 
     const product = db.prepare("SELECT * FROM products WHERE id = ? AND is_active = 1").get(id);
     if (!product) return res.status(404).json({ success: false, error: "Producto no encontrado" });
 
-    const costValue = parseFloat(cost) || 0;
+    const enteredCost = parseFloat(cost) || 0;
+    const isBox =
+      (product.sale_unit === "box" || product.sale_unit === "package") &&
+      product.box_qty > 0;
+    // The user enters the TOTAL cost of this purchase; if empty, use cost_price × quantity
+    const totalCost =
+      enteredCost > 0
+        ? enteredCost
+        : isBox
+          ? ((product.cost_price || 0) / product.box_qty) * quantity
+          : (product.cost_price || 0) * quantity;
 
-    db.prepare("UPDATE products SET stock = stock + ?, cost_price = CASE WHEN ? > 0 THEN ? ELSE cost_price END WHERE id = ?")
-      .run(quantity, costValue, costValue, id);
+    // Optional cost price update (the user confirmed the new unit/box cost)
+    if (req.body.updateCostPrice !== undefined && !isNaN(parseFloat(req.body.updateCostPrice))) {
+      const rounded = Math.round((parseFloat(req.body.updateCostPrice) + Number.EPSILON) * 100) / 100;
+      db.prepare("UPDATE products SET cost_price = ? WHERE id = ?").run(rounded, id);
+    }
+
+    const supplier = supplierId
+      ? db.prepare("SELECT id, name FROM suppliers WHERE id = ?").get(supplierId)
+      : null;
+    const supplierName = supplier?.name || null;
+
+    db.prepare("UPDATE products SET stock = stock + ? WHERE id = ?")
+      .run(quantity, id);
     db.prepare(`
-      INSERT INTO stock_movements (product_id, type, quantity, cost, reference, notes)
-      VALUES (?, 'in', ?, ?, 'App móvil', ?)
-    `).run(id, quantity, costValue, notes || "Movil");
+      INSERT INTO stock_movements (product_id, type, quantity, cost, reference, notes, cashier_id, supplier_id)
+      VALUES (?, 'in', ?, ?, 'App móvil', ?, ?, ?)
+    `).run(id, quantity, totalCost, supplierName ? `Compra de inventario — ${supplierName}` : (notes || "Movil"), req.cashierId || null, supplier ? supplier.id : null);
 
     // Register cost as expense (even if no cash register is open)
-    if (costValue > 0) {
+    // unless the user opted to not deduct from the register (registerExpense=false).
+    if (registerExpense !== false && totalCost > 0) {
       const todayMX = new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
       const openReg = db.prepare("SELECT id FROM cash_register WHERE date = ? AND status = 'open'").get(todayMX);
       if (openReg) {
-        db.prepare("UPDATE cash_register SET expenses = COALESCE(expenses, 0) + ? WHERE id = ?").run(costValue, openReg.id);
+        db.prepare("UPDATE cash_register SET expenses = COALESCE(expenses, 0) + ? WHERE id = ?").run(totalCost, openReg.id);
       }
-      db.prepare("INSERT INTO cash_register_expenses (register_id, amount, reason) VALUES (?, ?, ?)")
-        .run(openReg ? openReg.id : null, costValue, `Compra de inventario: ${product.name}`);
+      const reason = supplierName
+        ? `Compra de ${product.name} — ${supplierName}`
+        : `Compra de inventario: ${product.name}`;
+      db.prepare("INSERT INTO cash_register_expenses (register_id, amount, reason, product_id, quantity) VALUES (?, ?, ?, ?, ?)")
+        .run(openReg ? openReg.id : null, totalCost, reason, id, quantity);
     }
 
     const updated = db.prepare("SELECT id, barcode, name, price, stock, cost_price, sale_unit, category_id, min_stock, box_qty, box_price FROM products WHERE id = ?").get(id);
@@ -143,18 +183,71 @@ const startServer = (db, port = 3456) => {
     res.json({ success: true, categories });
   }));
 
-  return new Promise((resolve) => {
-    server = app.listen(port, "0.0.0.0", () => {
-      console.log(`API Server running on port ${port}`);
-      resolve({ success: true, port });
+  const MAX_ATTEMPTS = 3;
+  let lastError = "Error desconocido al iniciar el servidor";
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const result = await new Promise((resolve) => {
+      // Sin host: bind dual-stack (IPv6 :: + IPv4 mapeado). Bindear a "0.0.0.0"
+      // falla con EADDRINUSE cuando hay una conexión activa en el puerto
+      // (p.ej. sockets de explorer/telemetría), aunque netstat no muestre listener.
+      const srv = app.listen(port);
+      let settled = false;
+      let errored = false;
+      const finish = (r) => {
+        if (!settled) {
+          settled = true;
+          resolve(r);
+        }
+      };
+
+      srv.on("listening", () => {
+        // En Windows a veces se emite 'listening' y luego 'error' (EADDRINUSE)
+        // cuando el puerto ya estaba ocupado. Esperamos brevemente para que el
+        // error gane y no reportar un falso éxito.
+        setTimeout(() => {
+          if (errored) return;
+          server = srv;
+          console.log(`API Server running on port ${port}`);
+          finish({ success: true, port });
+        }, 300);
+      });
+
+      srv.on("error", (err) => {
+        errored = true;
+        console.error("API Server error:", err.message);
+        if (server === srv) server = null;
+        finish({ success: false, error: err.message });
+      });
     });
 
-    server.on("error", (err) => {
-      console.error("API Server error:", err.message);
-      server = null;
-      resolve({ success: false, error: err.message });
-    });
-  });
+    if (result.success) return result;
+
+    lastError = result.error;
+    if (!/EADDRINUSE/i.test(lastError)) break;
+
+    if (attempt < MAX_ATTEMPTS) {
+      console.log(
+        `[API] Puerto ${port} ocupado, reintentando en 1.5s (intento ${attempt + 1}/${MAX_ATTEMPTS})...`,
+      );
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+
+  try {
+    const output = require("child_process")
+      .execSync(`netstat -ano | findstr LISTENING | findstr ":${port} "`, {
+        timeout: 3000,
+        encoding: "utf8",
+      })
+      .toString();
+    console.error(`[API] Puerto ${port} en uso por:\n${output}`);
+  } catch {}
+
+  return {
+    success: false,
+    error: `listen EADDRINUSE: address already in use 0.0.0.0:${port}`,
+  };
 };
 
 const stopServer = () => {

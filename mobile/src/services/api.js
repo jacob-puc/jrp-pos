@@ -139,12 +139,15 @@ export const createProduct = (product) =>
     body: JSON.stringify(product),
   });
 
-export const addStock = (productId, quantity, cost = "", notes = "") =>
-  apiFetch(`/api/products/${productId}/stock`, {
+export const addStock = (productId, quantity, cost = "", notes = "", registerExpense = true, updateCostPrice = null) => {
+  const body = { quantity, cost: parseFloat(cost) || 0, notes, registerExpense };
+  if (typeof updateCostPrice === "number") body.updateCostPrice = updateCostPrice;
+  return apiFetch(`/api/products/${productId}/stock`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ quantity, cost: parseFloat(cost) || 0, notes }),
+    body: JSON.stringify(body),
   });
+};
 
 export const getCategories = () => apiFetch("/api/categories");
 

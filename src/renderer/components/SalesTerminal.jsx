@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  useCallback,
+} from "react";
 import { keyframes } from "@emotion/react";
 import { createPortal } from "react-dom";
 import { useCashier } from "../contexts/CashierContext";
@@ -30,31 +36,357 @@ import {
 } from "@mui/material";
 import {
   ShoppingCart,
-  DeleteOutlined,
-  Add,
-  Remove,
-  CheckCircle,
+  Trash2,
+  Plus,
+  Minus,
+  CheckCircle2,
   CreditCard,
   Search,
-  AttachMoney,
-  AddCircleOutline,
+  DollarSign,
+  PlusCircle,
   QrCode,
-  AccountBalance,
-  QrCodeScanner,
-  DeleteSweep,
-  PointOfSale,
+  Landmark,
+  Banknote,
   Store,
-  MonitorWeight,
+  Scale,
   Percent,
-} from "@mui/icons-material";
+  Smartphone,
+  TriangleAlert,
+  Carrot,
+  Package,
+  Layers,
+  Circle,
+} from "lucide-react";
+import { QrCodeScanner } from "@mui/icons-material";
 import CancelButton from "./CancelButton";
 import { useNavigate } from "react-router-dom";
+import { isContainerUnit, unitLabels } from "../utils/unitLabels";
 
 const scanMove = keyframes`
   0% { left: -30%; }
   50% { left: 100%; }
   100% { left: -30%; }
 `;
+
+const roundCash = (amount) => {
+  const base = Math.floor(amount);
+  const cents = Math.round((amount - base) * 100);
+  if (cents <= 29) return base;
+  if (cents <= 79) return base + 0.5;
+  return base + 1;
+};
+
+const calcFinalPrice = (price, discount) =>
+  price * (1 - (discount || 0) / 100);
+
+const parseQtyPrefix = (str) => {
+  const m = /^(\d+)\*(.+)$/.exec(str);
+  if (m) {
+    const qty = parseInt(m[1], 10);
+    return { qty: qty >= 1 ? qty : 1, rest: m[2].trim() };
+  }
+  return { qty: null, rest: str };
+};
+
+const inputSx = {
+  "& .MuiOutlinedInput-root.MuiOutlinedInput-root": {
+    borderRadius: "6px",
+    "& fieldset": { borderRadius: "6px" },
+  },
+  "& .MuiInputBase-input::placeholder": { fontSize: "0.85rem" },
+};
+
+const FieldLabel = ({ children }) => (
+  <Typography
+    variant="caption"
+    sx={{
+      display: "block",
+      mb: 0.5,
+      fontWeight: 600,
+      color: "text.secondary",
+    }}
+  >
+    {children}
+  </Typography>
+);
+
+const PRESET_RECHARGES = [12, 22, 32, 52, 62, 100];
+
+const lineKeyOf = (item) =>
+  `${item.id}:${item.isWeightItem ? "w" : item.isBoxItem ? "b" : item.isPackItem ? "p" : "s"}`;
+
+const packPriceOf = (p) => (p.sale_unit === "boxpack" ? p.price : p.pack_price);
+const piecePriceOf = (p) => (p.sale_unit === "boxpack" ? p.pack_price : p.price);
+
+const canManualDiscount = (i) =>
+  !!i.has_discount && i.discount_percent <= 0 && !(i.prices && i.prices.length > 0);
+
+const promoInfo = (it, qty) => {
+  const baseUnit = calcFinalPrice(it.price, it.discount_percent);
+  const baseTotal = baseUnit * qty;
+  if (
+    it.isBoxItem ||
+    it.isPackItem ||
+    it.isWeightItem ||
+    !it.prices ||
+    it.prices.length === 0
+  ) {
+    return { total: baseTotal, unit: baseUnit, applied: null };
+  }
+  let best = { total: baseTotal, unit: baseUnit, applied: null };
+  for (const e of it.prices) {
+    let t;
+    if (e.type === "mayoreo") {
+      if (qty < e.qty) continue;
+      t = qty * e.price;
+    } else {
+      if (qty < e.qty) continue;
+      const combos = Math.floor(qty / e.qty);
+      const rest = qty % e.qty;
+      t = combos * e.price + rest * baseUnit;
+    }
+    if (t < best.total - 1e-9) best = { total: t, unit: t / qty, applied: e };
+  }
+  return best;
+};
+const lineTotal = (it, qty) => promoInfo(it, qty).total - (it.discount || 0);
+const lineUnitPrice = (it, qty) => (qty > 0 ? lineTotal(it, qty) / qty : 0);
+
+const CartItem = React.memo(
+  ({
+    item,
+    index,
+    isSelected,
+    onSelect,
+    onQuantityChange,
+    onRemove,
+    onDiscount,
+  }) => {
+    const theme = useTheme();
+    const isDark = theme.palette.mode === "dark";
+    const promo = promoInfo(item, item.quantity).applied;
+    const fp = lineUnitPrice(item, item.quantity);
+    return (
+      <Paper
+        elevation={0}
+        onClick={() => onSelect(index)}
+        sx={{
+          mb: 1,
+          p: 1.5,
+          cursor: "pointer",
+          background: isSelected
+            ? isDark
+              ? "rgba(59,130,246,0.15)"
+              : "rgba(37,99,235,0.1)"
+            : isDark
+              ? "rgba(59,130,246,0.04)"
+              : "rgba(37,99,235,0.03)",
+          border: `1px solid ${isSelected ? theme.palette.primary.main : isDark ? "rgba(59,130,246,0.1)" : "rgba(37,99,235,0.08)"}`,
+          borderRadius: "8px",
+          transition: "all 0.15s ease",
+        }}
+      >
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 0.5,
+                flexWrap: "wrap",
+              }}
+            >
+              <Typography
+                variant="body2"
+                sx={{ fontWeight: 600, fontSize: "0.95rem" }}
+              >
+                {item.name}
+              </Typography>
+              {item.isWeightItem && (
+                <Chip
+                  icon={<Carrot size={12} />}
+                  label="kg"
+                  size="small"
+                  sx={{
+                    height: 20,
+                    fontSize: "0.65rem",
+                    bgcolor: "rgba(59,130,246,0.12)",
+                    color: theme.palette.primary.main,
+                    fontWeight: 700,
+                  }}
+                />
+              )}
+              {item.isBoxItem && (
+                <Chip
+                  icon={<Package size={12} />}
+                  label={unitLabels(item.sale_unit)?.badge || "caja"}
+                  size="small"
+                  sx={{
+                    height: 20,
+                    fontSize: "0.65rem",
+                    bgcolor: "rgba(16,185,129,0.12)",
+                    color: theme.palette.success.main,
+                    fontWeight: 700,
+                  }}
+                />
+              )}
+              {item.isPackItem && (
+                <Chip
+                  icon={<Layers size={12} />}
+                  label="paquete"
+                  size="small"
+                  sx={{
+                    height: 20,
+                    fontSize: "0.65rem",
+                    bgcolor: "rgba(245,158,11,0.12)",
+                    color: "#d97706",
+                    fontWeight: 700,
+                  }}
+                />
+              )}
+              {!item.isWeightItem &&
+                !item.isBoxItem &&
+                !item.isPackItem &&
+                (item.sale_unit === "boxpack" ||
+                  item.sale_unit === "box" ||
+                  item.sale_unit === "package") && (
+                  <Chip
+                    icon={<Circle size={12} />}
+                    label="pieza"
+                    size="small"
+                    sx={{
+                      height: 20,
+                      fontSize: "0.65rem",
+                      bgcolor: "rgba(100,116,139,0.12)",
+                      color: theme.palette.text.secondary,
+                      fontWeight: 700,
+                    }}
+                  />
+                )}
+              {item.discount_percent > 0 && (
+                <Chip
+                  label={`-${item.discount_percent}%`}
+                  color="error"
+                  size="small"
+                  sx={{ ml: 0.5, height: 18, fontSize: "0.6rem" }}
+                />
+              )}
+              {item.discount > 0 && (
+                <Chip
+                  label={`-$${item.discount.toFixed(2)}`}
+                  color="error"
+                  size="small"
+                  sx={{ ml: 0.5, height: 18, fontSize: "0.6rem" }}
+                />
+              )}
+              {promo && (
+                <Chip
+                  label={
+                    promo.type === "mayoreo"
+                      ? `Mayoreo desde ${promo.qty} pz`
+                      : `Oferta ${promo.qty}×$${promo.price.toFixed(2)}`
+                  }
+                  color="secondary"
+                  size="small"
+                  sx={{ ml: 0.5, height: 18, fontSize: "0.6rem" }}
+                />
+              )}
+            </Box>
+            <Typography
+              variant="caption"
+              color="textSecondary"
+              sx={{ fontSize: "0.85rem" }}
+            >
+              {item.discount_percent > 0 || item.discount > 0 || promo ? (
+                <>
+                  <span style={{ textDecoration: "line-through" }}>
+                    ${item.price.toFixed(2)}
+                  </span>{" "}
+                  ${fp.toFixed(2)}
+                </>
+              ) : (
+                `$${item.price.toFixed(2)}`
+              )}{" "}
+              {item.isWeightItem
+                ? "/ kg"
+                : item.isBoxItem
+                  ? (unitLabels(item.sale_unit)?.perSlash || "/ caja")
+                  : item.isPackItem
+                    ? "/ paquete"
+                    : "c/u"}
+            </Typography>
+          </Box>
+          <Stack direction="row" alignItems="center" spacing={0.3}>
+            <IconButton
+              size="small"
+              onClick={() => onQuantityChange(item, -1)}
+              sx={{ width: 32, height: 32 }}
+            >
+              <Minus size={18} />
+            </IconButton>
+            <Typography
+              variant="body2"
+              sx={{
+                fontWeight: 700,
+                minWidth: item.isWeightItem ? 52 : 30,
+                textAlign: "center",
+                fontSize: "1.05rem",
+              }}
+            >
+              {item.isWeightItem
+                ? `${item.quantity.toFixed(3)}`
+                : item.quantity}
+            </Typography>
+            <IconButton
+              size="small"
+              onClick={() => onQuantityChange(item, 1)}
+              sx={{ width: 32, height: 32 }}
+            >
+              <Plus size={18} />
+            </IconButton>
+          </Stack>
+          <Typography
+            variant="body2"
+            sx={{
+              fontWeight: 700,
+              minWidth: 80,
+              textAlign: "right",
+              color: theme.palette.success.main,
+              fontSize: "1.05rem",
+            }}
+          >
+            ${(fp * item.quantity).toFixed(2)}
+          </Typography>
+          {canManualDiscount(item) && (
+            <IconButton
+              size="small"
+              onClick={() => onDiscount(item)}
+              sx={{
+                width: 32,
+                height: 32,
+                color: item.discount > 0 ? "error.main" : "text.secondary",
+                bgcolor:
+                  item.discount > 0
+                    ? "rgba(239,68,68,0.1)"
+                    : "transparent",
+              }}
+              title="Descuento del producto"
+            >
+              <Percent size={20} />
+            </IconButton>
+          )}
+          <IconButton
+            size="small"
+            onClick={() => onRemove(item)}
+            sx={{ color: "error.main", width: 32, height: 32 }}
+          >
+            <Trash2 size={20} />
+          </IconButton>
+        </Box>
+      </Paper>
+    );
+  },
+);
 
 const SalesTerminal = () => {
   const { cashier } = useCashier();
@@ -68,15 +400,23 @@ const SalesTerminal = () => {
     message: "",
     severity: "info",
   });
+  const [registerWarn, setRegisterWarn] = useState(false);
+  const lastRegisterWarnRef = useRef(0);
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [cashDialogOpen, setCashDialogOpen] = useState(false);
   const [cashAmount, setCashAmount] = useState("");
   const [change, setChange] = useState(0);
+  const [waitingDrawer, setWaitingDrawer] = useState(false);
   const [searchResults, setSearchResults] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
   const [manualProductModalOpen, setManualProductModalOpen] = useState(false);
   const [manualProduct, setManualProduct] = useState({ name: "", price: "" });
+  const [pendingQty, setPendingQty] = useState(1);
+  const [qtyDialogOpen, setQtyDialogOpen] = useState(false);
+  const [qtyInput, setQtyInput] = useState("");
+  const [recargaDialogOpen, setRecargaDialogOpen] = useState(false);
+  const [recargaAmount, setRecargaAmount] = useState("");
   const [storeSettings, setStoreSettings] = useState({
     name: "MI TIENDA POS",
     website: "www.mitienda.com",
@@ -92,6 +432,7 @@ const SalesTerminal = () => {
   const [boxChoiceDialog, setBoxChoiceDialog] = useState({
     open: false,
     product: null,
+    qty: 1,
   });
   const [discountDialog, setDiscountDialog] = useState({
     open: false,
@@ -100,40 +441,104 @@ const SalesTerminal = () => {
   const [discountValue, setDiscountValue] = useState("");
   const [printing, setPrinting] = useState(false);
   const searchTimeoutRef = useRef(null);
+  const suggestionListRef = useRef(null);
   const cartRef = useRef(cart);
   const lastEscRef = useRef(0);
-  const lastDiscountItemIdRef = useRef(null);
+  const lastDiscountItemKeyRef = useRef(null);
   const theme = useTheme();
   const isDark = theme.palette.mode === "dark";
   const isLargeScreen = useMediaQuery(theme.breakpoints.up("lg"));
-  const DRAWER_WIDTH = isLargeScreen ? 460 : 380;
+  const isXLargeScreen = useMediaQuery(theme.breakpoints.up("xl"));
+  const isMediumScreen = useMediaQuery(theme.breakpoints.up("md"));
+  const isSmallScreen = useMediaQuery(theme.breakpoints.down("sm"));
+  const DRAWER_WIDTH = isXLargeScreen ? 490 : isLargeScreen ? 430 : isMediumScreen ? 350 : isSmallScreen ? 270 : 310;
   const hasCart = cart.length > 0;
+  const layoutRef = useRef(null);
+  const [cartWidth, setCartWidth] = useState(() => {
+    const saved = localStorage.getItem("cartWidth");
+    return saved ? parseInt(saved, 10) : 0;
+  });
+  const effectiveCartWidth = cartWidth || DRAWER_WIDTH;
+  useEffect(() => {
+    if (cartWidth > 0) localStorage.setItem("cartWidth", String(cartWidth));
+  }, [cartWidth]);
+  const startResize = (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = effectiveCartWidth;
+    const onMove = (ev) => {
+      const container = layoutRef.current;
+      const maxW = container ? container.clientWidth * 0.55 : 900;
+      const minW = 240;
+      setCartWidth(Math.min(Math.max(startWidth + ev.clientX - startX, minW), maxW));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+  const [selectedCartItemIndex, setSelectedCartItemIndex] = useState(-1);
+  const [focusZone, setFocusZone] = useState("search");
+const processSaleRef = useRef(null);
 
-  const processSaleRef = useRef(null);
-  const discountTotal = cart.reduce((sum, item) => {
-    const itemSubtotal = item.price * (item.quantity || 1);
-    const itemDiscount =
-      item.discount_percent > 0
-        ? itemSubtotal * (item.discount_percent / 100)
-        : item.discount || 0;
-    return sum + itemDiscount;
-  }, 0);
+  const cartSummary = useMemo(() => {
+    const subtotal = cart.reduce(
+      (s, item) => s + item.price * (item.quantity || 1),
+      0,
+    );
+    const total = cart.reduce(
+      (s, item) => s + lineTotal(item, item.quantity || 1),
+      0,
+    );
+    const discountTotal = Math.max(0, subtotal - total);
+
+    return {
+      subtotal,
+      total,
+      discountTotal
+    };
+  }, [cart]);
+
+  const isCashPayment = paymentMethod === "cash";
+  const displaySubtotal = isCashPayment
+    ? roundCash(cartSummary.subtotal)
+    : cartSummary.subtotal;
+  const displayTotal = isCashPayment
+    ? roundCash(cartSummary.total)
+    : cartSummary.total;
+  const displayDiscountTotal = displaySubtotal - displayTotal;
 
   const processSale = async (method) => {
+    const registerOpen = await checkRegisterOpen();
+    if (!registerOpen) {
+      warnRegisterClosed();
+      return;
+    }
+    const cartForSale = cart.map((it) => ({
+      ...it,
+      finalPrice: lineUnitPrice(it, it.quantity),
+    }));
     const result = await window.api.invoke("record-sale", {
-      cart,
-      total: total,
+      cart: cartForSale,
+      total: method === "cash" ? roundCash(cartSummary.total) : cartSummary.total,
       paymentMethod: method,
-      discountTotal,
+      discountTotal: cartSummary.discountTotal,
       cashierName: cashier?.name || "Usuario Principal",
     });
     if (result.success) {
-      setCart([]);
-      setPaymentMethod("");
-      setCashDialogOpen(false);
-      setCashAmount("");
-      setChange(0);
-      setBarcode("");
+      if (method === "cash") {
+        setWaitingDrawer(true);
+      } else {
+        setCart([]);
+        setPaymentMethod("");
+        setCashDialogOpen(false);
+        setCashAmount("");
+        setChange(0);
+        setBarcode("");
+      }
+      window.dispatchEvent(new CustomEvent("sale-registered"));
       showNotification("Venta registrada exitosamente", "success");
       try {
         const printEnabled = await window.api.invoke("get-setting", "print_enabled");
@@ -197,7 +602,53 @@ const SalesTerminal = () => {
   }, [cart, processSale]);
 
   useEffect(() => {
+    setSubtotal(cartSummary.subtotal);
+    setTotal(cartSummary.total);
+  }, [cart, cartSummary]);
+
+  useEffect(() => {
+    if (cart.length === 0) {
+      setSelectedCartItemIndex(-1);
+      setFocusZone("search");
+    }
+  }, [cart.length]);
+
+  useEffect(() => {
     const handleKeyDown = (e) => {
+      const barcodeInput = document.getElementById("barcode-input");
+      const isBarcodeFocused = document.activeElement?.id === "barcode-input";
+      const el = e.target;
+      const isEditable =
+        el?.tagName === "INPUT" ||
+        el?.tagName === "TEXTAREA" ||
+        el?.tagName === "SELECT" ||
+        el?.isContentEditable;
+
+      if (
+        cashDialogOpen ||
+        discountDialog.open ||
+        boxChoiceDialog.open ||
+        weightDialog.open ||
+        manualProductModalOpen ||
+        qtyDialogOpen ||
+        recargaDialogOpen
+      )
+        return;
+
+      if (!isBarcodeFocused && !isEditable && !e.ctrlKey && !e.metaKey) {
+        if (e.key === "F5") {
+          e.preventDefault();
+          barcodeInput?.focus();
+          return;
+        }
+        if (e.key.length === 1 && /[\w\d]/.test(e.key) && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault();
+          barcodeInput?.focus();
+          setBarcode((prev) => prev + e.key);
+          return;
+        }
+      }
+
       if (e.key === "F8" && cartRef.current.length > 0) {
         e.preventDefault();
         if (paymentMethod === "cash") {
@@ -215,37 +666,45 @@ const SalesTerminal = () => {
         e.preventDefault();
         const lastItem = cartRef.current?.[cartRef.current.length - 1];
         if (lastItem && !lastItem.isWeightItem) {
-          updateQuantity(lastItem.id, 1, false);
+          updateQuantity(lastItem, 1);
         }
       }
       if (e.key === "F3") {
         e.preventDefault();
         const lastItem = cartRef.current?.[cartRef.current.length - 1];
         if (lastItem && !lastItem.isWeightItem) {
-          updateQuantity(lastItem.id, -1, false);
+          updateQuantity(lastItem, -1);
         }
       }
       if (e.key === "q" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         document.getElementById("barcode-input")?.focus();
+        setFocusZone("search");
+      }
+      if (e.key === "r" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        setRecargaDialogOpen(true);
       }
       if (e.key === "F2") {
         e.preventDefault();
         setManualProductModalOpen(true);
+      }
+      if (e.key === "F9") {
+        e.preventDefault();
+        setQtyInput(pendingQty === 1 ? "" : String(pendingQty));
+        setQtyDialogOpen(true);
       }
       if (e.key === "F7") {
         e.preventDefault();
         const cart = cartRef.current;
         if (cart.length > 0) {
           const lastItem = cart[cart.length - 1];
-          removeFromCart(lastItem.id);
+          removeFromCart(lastItem);
         }
       }
       if (e.key === "F6") {
         e.preventDefault();
-        const eligible = cartRef.current.filter(
-          (i) => i.has_discount && i.discount_percent <= 0,
-        );
+        const eligible = cartRef.current.filter(canManualDiscount);
         if (eligible.length === 0) {
           showNotification(
             "No hay productos con descuento manual en el carrito",
@@ -254,11 +713,11 @@ const SalesTerminal = () => {
           return;
         }
         const currentIdx = eligible.findIndex(
-          (i) => i.id === lastDiscountItemIdRef.current,
+          (i) => lineKeyOf(i) === lastDiscountItemKeyRef.current,
         );
         const next = currentIdx === -1 ? 0 : (currentIdx + 1) % eligible.length;
         const target = eligible[next];
-        lastDiscountItemIdRef.current = target.id;
+        lastDiscountItemKeyRef.current = lineKeyOf(target);
         setDiscountValue(
           target.discount > 0 ? String(target.discount.toFixed(2)) : "",
         );
@@ -281,26 +740,125 @@ const SalesTerminal = () => {
         localStorage.setItem("eodPendingAction", "withdraw");
         navigate("/end-of-day");
       }
-      if (e.key === "Escape" && document.activeElement?.id !== "barcode-input") {
+
+      if (e.key === "Tab") {
         e.preventDefault();
-        const now = Date.now();
-        if (now - lastEscRef.current < 400) {
-          setCart([]);
-          setPaymentMethod("");
-          showNotification("Carrito limpiado", "success");
+        if (focusZone === "search" && cartRef.current.length > 0) {
+          setFocusZone("cart");
+          setSelectedCartItemIndex(0);
+          document.getElementById("barcode-input")?.blur();
+        } else if (focusZone === "cart" || focusZone === "payment") {
+          setSelectedCartItemIndex(-1);
+          setFocusZone("search");
+          document.getElementById("barcode-input")?.focus();
         }
-        lastEscRef.current = now;
+      }
+
+      if (e.key === "Escape" && !isEditable) {
+        if (focusZone === "cart" || focusZone === "payment") {
+          e.preventDefault();
+          setSelectedCartItemIndex(-1);
+          setFocusZone("search");
+          document.getElementById("barcode-input")?.focus();
+        } else if (document.activeElement?.id !== "barcode-input") {
+          e.preventDefault();
+          const now = Date.now();
+          if (now - lastEscRef.current < 400) {
+            setCart([]);
+            setPaymentMethod("");
+            showNotification("Carrito limpiado", "success");
+          }
+          lastEscRef.current = now;
+        }
+      }
+
+      if (focusZone === "cart" && cartRef.current.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          if (selectedCartItemIndex >= cartRef.current.length - 1) {
+            setFocusZone("payment");
+          } else {
+            setSelectedCartItemIndex((prev) => prev + 1);
+          }
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSelectedCartItemIndex((prev) =>
+            prev > 0 ? prev - 1 : cartRef.current.length - 1,
+          );
+        }
+        if (e.key === "ArrowRight") {
+          e.preventDefault();
+          const item = cartRef.current[selectedCartItemIndex];
+          if (item && !item.isWeightItem) {
+            updateQuantity(item, 1);
+          }
+        }
+        if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          const item = cartRef.current[selectedCartItemIndex];
+          if (item && !item.isWeightItem) {
+            updateQuantity(item, -1);
+          }
+        }
+        if (e.key === "Enter" && !isBarcodeFocused && paymentMethod) {
+          e.preventDefault();
+          if (paymentMethod === "cash") {
+            setCashDialogOpen(true);
+          } else {
+            processSaleRef.current(paymentMethod);
+          }
+        }
+      }
+
+      if (focusZone === "payment") {
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          setFocusZone("cart");
+          setSelectedCartItemIndex(cartRef.current.length - 1);
+        }
+if (e.key === "Tab" && !isEditable) {
+          e.preventDefault();
+          setFocusZone("search");
+          document.getElementById("barcode-input")?.focus();
+        }
+        if (e.key === "ArrowRight") {
+          e.preventDefault();
+          setPaymentMethod((prev) =>
+            prev === "cash" ? "card" : prev === "card" ? "transfer" : "cash",
+          );
+        }
+        if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          setPaymentMethod((prev) =>
+            prev === "cash" ? "transfer" : prev === "transfer" ? "card" : "cash",
+          );
+        }
+        if (e.key === "Enter" && !isBarcodeFocused) {
+          e.preventDefault();
+          if (paymentMethod === "cash") {
+            setCashDialogOpen(true);
+          } else if (paymentMethod) {
+            processSaleRef.current(paymentMethod);
+          }
+        }
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [paymentMethod, navigate]);
-
-  useEffect(() => {
-    const sub = cart.reduce((s, item) => s + item.price * item.quantity, 0);
-    setSubtotal(sub);
-    setTotal(sub - discountTotal);
-  }, [cart]);
+  }, [
+    paymentMethod,
+    navigate,
+    focusZone,
+    selectedCartItemIndex,
+    cashDialogOpen,
+    discountDialog.open,
+    boxChoiceDialog.open,
+    weightDialog.open,
+    manualProductModalOpen,
+    qtyDialogOpen,
+    pendingQty,
+  ]);
 
   useEffect(() => {
     if (!weightDialog.open || !weightDialog.product) return;
@@ -308,7 +866,7 @@ const SalesTerminal = () => {
 
     const unsub = window.api.on("weight-update", (data) => {
       if (!cancelled && data.weight >= 0) {
-        setWeightAmount(data.weight.toString());
+        setWeightAmount(data.weight.toFixed(3));
       }
     });
 
@@ -330,18 +888,19 @@ const SalesTerminal = () => {
 
   useEffect(() => {
     const debounceTimer = setTimeout(async () => {
-      const isNumeric = /^\d+$/.test(barcode);
+      const searchQuery = barcode.replace(/^\d+\*/g, "");
+      const isNumeric = /^\d+$/.test(searchQuery);
       const minChars = isNumeric ? 5 : 3;
-      if (barcode.length >= minChars) {
+      if (searchQuery.length >= minChars) {
         setIsSearching(true);
         setSearchTimedOut(false);
         setShowSuggestions(false);
         searchTimeoutRef.current = setTimeout(() => {
           setIsSearching(false);
           setSearchTimedOut(true);
-        }, 8000);
+        }, 3000);
         try {
-          const products = await window.api.invoke("search-products", barcode);
+          const products = await window.api.invoke("search-products", searchQuery);
           clearTimeout(searchTimeoutRef.current);
           setSearchResults(products);
           setShowSuggestions(products.length > 0);
@@ -357,30 +916,80 @@ const SalesTerminal = () => {
         setSearchResults([]);
         setShowSuggestions(false);
         setIsSearching(false);
-        setSearchTimedOut(false);
       }
-    }, 300);
+    }, 200);
     return () => {
       clearTimeout(debounceTimer);
       clearTimeout(searchTimeoutRef.current);
     };
   }, [barcode]);
 
-  const showNotification = (message, severity = "info") => {
+  useEffect(() => {
+    if (selectedSuggestionIndex < 0) return;
+    const el =
+      suggestionListRef.current?.querySelectorAll("[data-suggestion-idx]")[
+        selectedSuggestionIndex
+      ];
+    el?.scrollIntoView({ block: "nearest" });
+  }, [selectedSuggestionIndex, searchResults]);
+
+  const showNotification = useCallback((message, severity = "info") => {
     setNotification({ open: true, message, severity });
+  }, []);
+
+  const checkRegisterOpen = async () => {
+    try {
+      const res = await window.api.invoke("get-cash-register-status", {
+        cashierId: cashier?.id,
+        role: cashier?.role,
+      });
+      return !!(res.success && res.register && res.register.status === "open");
+    } catch {
+      return false;
+    }
   };
 
-  const calcFinalPrice = (price, discount) =>
-    price * (1 - (discount || 0) / 100);
+  const warnRegisterClosed = () => {
+    const now = Date.now();
+    if (now - lastRegisterWarnRef.current < 5000) return;
+    lastRegisterWarnRef.current = now;
+    setRegisterWarn(true);
+  };
 
-  const addProductToCart = (product) => {
+  const clearSearch = () => {
+    setBarcode("");
+    setShowSuggestions(false);
+    setSelectedSuggestionIndex(-1);
+    refocusBarcode();
+  };
+
+  const committedStock = (product) =>
+    cart
+      .filter((it) => it.id === product.id)
+      .reduce((sum, it) => {
+        if (it.isWeightItem) return sum + it.quantity;
+        if (it.isBoxItem) return sum + it.quantity * (it.box_qty || 1);
+        if (it.isPackItem) return sum + it.quantity * (it.pack_qty || 1);
+        return sum + it.quantity;
+      }, 0);
+
+  const addProductToCart = (product, qtyOverride) => {
+    checkRegisterOpen().then((open) => {
+      if (!open) warnRegisterClosed();
+    });
+    const qty = qtyOverride ?? pendingQty;
     if (product.sale_unit === "weight" && !product.isManual) {
+      setPendingQty(1);
       setWeightAmount("");
       setWeightDialog({ open: true, product });
       return;
     }
-    if (product.sale_unit === "box" && !product.isManual) {
-      setBoxChoiceDialog({ open: true, product });
+    if (
+      (isContainerUnit(product.sale_unit) || product.pack_qty > 0) &&
+      !product.isManual
+    ) {
+      setPendingQty(1);
+      setBoxChoiceDialog({ open: true, product, qty });
       return;
     }
     const effectivePrice = calcFinalPrice(
@@ -389,30 +998,49 @@ const SalesTerminal = () => {
     );
     const productWithDiscount = { ...product, finalPrice: effectivePrice };
 
-    if (product.stock > 0 || product.isManual) {
+    if (product.isManual) {
       const existingIndex = cart.findIndex(
-        (item) =>
-          item.id === product.id ||
-          (product.isManual && item.name === product.name),
+        (item) => item.id === product.id || item.name === product.name,
       );
       if (existingIndex !== -1) {
         const updatedCart = [...cart];
-        if (
-          product.isManual ||
-          updatedCart[existingIndex].quantity < product.stock
-        ) {
-          updatedCart[existingIndex].quantity += 1;
-          setCart(updatedCart);
-          showNotification(`${product.name} agregado al carrito`, "success");
-        } else {
-          showNotification("Stock insuficiente", "warning");
-        }
+        updatedCart[existingIndex] = {
+          ...updatedCart[existingIndex],
+          quantity: updatedCart[existingIndex].quantity + qty,
+        };
+        setCart(updatedCart);
       } else {
-        setCart([...cart, { ...productWithDiscount, quantity: 1 }]);
-        showNotification(`${product.name} agregado al carrito`, "success");
+        setCart([...cart, { ...productWithDiscount, quantity: qty }]);
       }
-    } else {
+      if (qty !== 1) setPendingQty(1);
+      clearSearch();
+      showNotification(`${product.name} agregado al carrito`, "success");
+      return;
+    }
+    if (product.stock <= 0) {
       showNotification("Producto sin stock", "error");
+      return;
+    }
+    if (product.stock - committedStock(product) < 1) {
+      showNotification("Stock insuficiente", "warning");
+      return;
+    }
+    const existingIndex = cart.findIndex((item) => item.id === product.id);
+    if (existingIndex !== -1) {
+      const updatedCart = [...cart];
+      updatedCart[existingIndex] = {
+        ...updatedCart[existingIndex],
+        quantity: updatedCart[existingIndex].quantity + qty,
+      };
+      setCart(updatedCart);
+      if (qty !== 1) setPendingQty(1);
+      clearSearch();
+      showNotification(`${product.name} agregado al carrito`, "success");
+    } else {
+      setCart([...cart, { ...productWithDiscount, quantity: qty }]);
+      if (qty !== 1) setPendingQty(1);
+      clearSearch();
+      showNotification(`${product.name} agregado al carrito`, "success");
     }
   };
 
@@ -420,6 +1048,13 @@ const SalesTerminal = () => {
     const { product } = weightDialog;
     const kg = parseFloat(weightAmount) || 0;
     if (kg <= 0) return;
+    if (product.stock - committedStock(product) < kg) {
+      setWeightDialog({ open: false, product: null });
+      setWeightAmount("");
+      refocusBarcode();
+      showNotification("Stock insuficiente", "warning");
+      return;
+    }
     const effectivePrice = calcFinalPrice(
       product.price,
       product.discount_percent,
@@ -435,14 +1070,17 @@ const SalesTerminal = () => {
     );
     if (existingIndex !== -1) {
       const updatedCart = [...cart];
-      updatedCart[existingIndex].quantity += kg;
+      updatedCart[existingIndex] = {
+        ...updatedCart[existingIndex],
+        quantity: updatedCart[existingIndex].quantity + kg,
+      };
       setCart(updatedCart);
     } else {
       setCart([...cart, productWithWeight]);
     }
     setWeightDialog({ open: false, product: null });
     setWeightAmount("");
-    refocusBarcode();
+    clearSearch();
     showNotification(
       `${kg.toFixed(3)} kg de ${product.name} agregado`,
       "success",
@@ -450,31 +1088,57 @@ const SalesTerminal = () => {
   };
 
   const confirmBoxChoice = (choice) => {
-    const { product } = boxChoiceDialog;
+    const { product, qty = 1 } = boxChoiceDialog;
     const isBox = choice === "box";
-    const unitPrice = isBox ? product.box_price : product.price;
+    const isPack = choice === "pack";
+    const containerNoun =
+      unitLabels(product.sale_unit)?.containerNoun || "Caja";
+    const needPieces = isBox
+      ? product.box_qty || 1
+      : isPack
+        ? product.pack_qty || 1
+        : 1;
+    if (product.stock - committedStock(product) < needPieces * qty) {
+      setBoxChoiceDialog({ open: false, product: null });
+      refocusBarcode();
+      showNotification("Stock insuficiente", "warning");
+      return;
+    }
+    const unitPrice = isBox
+      ? product.box_price
+      : isPack
+        ? packPriceOf(product)
+        : piecePriceOf(product);
     const effectivePrice = calcFinalPrice(unitPrice, product.discount_percent);
     const item = {
       ...product,
       finalPrice: effectivePrice,
-      quantity: 1,
+      quantity: qty,
       isBoxItem: isBox,
+      isPackItem: isPack,
       price: unitPrice,
+      prices: product.prices || [],
     };
     const existingIndex = cart.findIndex(
-      (i) => i.id === product.id && i.isBoxItem === isBox,
+      (i) =>
+        i.id === product.id &&
+        i.isBoxItem === isBox &&
+        i.isPackItem === isPack,
     );
     if (existingIndex !== -1) {
       const updated = [...cart];
-      updated[existingIndex].quantity += 1;
+      updated[existingIndex] = {
+        ...updated[existingIndex],
+        quantity: updated[existingIndex].quantity + qty,
+      };
       setCart(updated);
     } else {
       setCart([...cart, item]);
     }
     setBoxChoiceDialog({ open: false, product: null });
-    refocusBarcode();
+    clearSearch();
     showNotification(
-      `${isBox ? "Caja" : "Pieza"} de ${product.name} agregado`,
+      `${isBox ? containerNoun : isPack ? "Paquete" : "Pieza"} de ${product.name} agregado`,
       "success",
     );
   };
@@ -485,38 +1149,45 @@ const SalesTerminal = () => {
     if (event.key === "Enter" && trimmedValue !== "") {
       event.preventDefault();
       setShowSuggestions(false);
+      const { qty, rest } = parseQtyPrefix(trimmedValue);
+      if (rest === "") {
+        setBarcode("");
+        setSelectedSuggestionIndex(-1);
+        showNotification("Producto no encontrado", "error");
+        return;
+      }
       if (
         selectedSuggestionIndex >= 0 &&
         searchResults[selectedSuggestionIndex]
       ) {
-        addProductToCart(searchResults[selectedSuggestionIndex]);
-        setBarcode("");
-        setSelectedSuggestionIndex(-1);
+        addProductToCart(searchResults[selectedSuggestionIndex], qty ?? undefined);
         return;
       }
       const { success, product } = await window.api.invoke(
         "get-product-by-barcode",
-        trimmedValue,
+        rest,
       );
       if (success && product) {
-        addProductToCart(product);
+        addProductToCart(product, qty ?? undefined);
+      } else if (qty && searchResults.length > 0) {
+        addProductToCart(searchResults[0], qty);
       } else {
+        setBarcode("");
+        setSelectedSuggestionIndex(-1);
         showNotification("Producto no encontrado", "error");
       }
-      setBarcode("");
-      setSelectedSuggestionIndex(-1);
     } else if (event.key === "ArrowDown") {
       event.preventDefault();
       if (showSuggestions && searchResults.length > 0) {
         setSelectedSuggestionIndex((prev) =>
-          prev < Math.min(searchResults.length - 1, 4) ? prev + 1 : 0,
+          prev < searchResults.length - 1 ? prev + 1 : 0,
         );
       }
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       if (showSuggestions && searchResults.length > 0) {
         setSelectedSuggestionIndex((prev) =>
-          prev > 0 ? prev - 1 : Math.min(searchResults.length - 1, 4),
+          prev > 0 ? prev - 1 : searchResults.length - 1,
         );
       }
     } else if (event.key === "Escape") {
@@ -551,64 +1222,107 @@ const SalesTerminal = () => {
     }, 150);
   };
 
-  const updateQuantity = (productId, delta, isWeight) => {
+  const confirmRecharge = () => {
+    const amount = parseFloat(recargaAmount);
+    if (!amount || amount <= 0) {
+      showNotification("Ingresa un monto válido", "warning");
+      return;
+    }
+    const item = {
+      id: `recarga-${amount}`,
+      name: `Recarga $${amount}`,
+      price: amount,
+      finalPrice: amount,
+      quantity: 1,
+      discount_percent: 0,
+      has_discount: 0,
+      barcode: `RECARGA-${amount}`,
+      stock: 999,
+      isManual: true,
+    };
+    setCart((prev) => [...prev, item]);
+    setRecargaDialogOpen(false);
+    setRecargaAmount("");
+    refocusBarcode();
+    showNotification(`Recarga $${amount} agregada al carrito`, "success");
+  };
+
+  const updateQuantity = useCallback((item, delta) => {
     setCart((prev) =>
       prev
-        .map((item) => {
-          if (item.id === productId) {
-            const step = isWeight ? 0.1 : item.isBoxItem ? 1 : 1;
-            const newQty = item.quantity + delta * step;
-            if (newQty <= 0) return null;
-            const qty = Math.min(newQty, item.stock || 999);
-            const disc = item.discount || 0;
-            const fp =
-              disc > 0 && qty > 0
-                ? (item.price * qty - disc) / qty
-                : item.finalPrice;
-            return { ...item, quantity: qty, finalPrice: fp };
-          }
-          return item;
+        .map((it) => {
+          if (
+            it.id !== item.id ||
+            it.isBoxItem !== item.isBoxItem ||
+            it.isPackItem !== item.isPackItem
+          )
+            return it;
+          const step = it.isWeightItem ? 0.1 : 1;
+          const newQty = it.quantity + delta * step;
+          if (newQty <= 0) return null;
+          const qty = Math.min(newQty, it.stock || 999);
+          const disc = it.discount || 0;
+          const fp =
+            disc > 0 && qty > 0
+              ? (it.price * qty - disc) / qty
+              : it.finalPrice;
+          return { ...it, quantity: qty, finalPrice: fp };
         })
         .filter(Boolean),
     );
-  };
+  }, []);
 
-  const removeFromCart = (productId) => {
-    setCart((prev) => prev.filter((item) => item.id !== productId));
-    showNotification("Producto eliminado del carrito", "info");
-  };
+  const removeFromCart = useCallback(
+    (item) => {
+      setCart((prev) =>
+        prev.filter(
+          (it) =>
+            it.id !== item.id ||
+            it.isBoxItem !== item.isBoxItem ||
+            it.isPackItem !== item.isPackItem,
+        ),
+      );
+      showNotification("Producto eliminado del carrito", "info");
+    },
+    [showNotification],
+  );
 
-  const applyDiscount = (productId, amount) => {
+  const applyDiscount = (item, amount) => {
     setCart((prev) =>
-      prev.map((item) => {
-        if (item.id !== productId) return item;
-        const qty = item.quantity || 1;
-        const max = item.price * qty;
+      prev.map((it) => {
+        if (lineKeyOf(it) !== lineKeyOf(item)) return it;
+        const qty = it.quantity || 1;
+        const max = it.price * qty;
         const discount = Math.min(Math.max(parseFloat(amount) || 0, 0), max);
-        const fp = discount > 0 ? (item.price * qty - discount) / qty : item.price;
-        return { ...item, discount, finalPrice: fp };
+        const fp = discount > 0 ? (it.price * qty - discount) / qty : it.price;
+        return { ...it, discount, finalPrice: fp };
       }),
     );
   };
 
-  const clearDiscount = (productId) => {
+  const clearDiscount = (item) => {
     setCart((prev) =>
-      prev.map((item) => {
-        if (item.id !== productId) return item;
+      prev.map((it) => {
+        if (lineKeyOf(it) !== lineKeyOf(item)) return it;
         const fp =
-          item.discount_percent > 0
-            ? calcFinalPrice(item.price, item.discount_percent)
-            : item.price;
-        return { ...item, discount: 0, finalPrice: fp };
+          it.discount_percent > 0
+            ? calcFinalPrice(it.price, it.discount_percent)
+            : it.price;
+        return { ...it, discount: 0, finalPrice: fp };
       }),
     );
   };
 
-  const openDiscountDialog = (item) => {
-    lastDiscountItemIdRef.current = item.id;
+  const openDiscountDialog = useCallback((item) => {
+    lastDiscountItemKeyRef.current = lineKeyOf(item);
     setDiscountValue(item.discount > 0 ? String(item.discount.toFixed(2)) : "");
     setDiscountDialog({ open: true, item });
-  };
+  }, []);
+
+  const onSelectItem = useCallback((i) => {
+    setSelectedCartItemIndex(i);
+    setFocusZone("cart");
+  }, []);
 
   const handleDiscountApply = () => {
     const item = discountDialog.item;
@@ -616,7 +1330,7 @@ const SalesTerminal = () => {
     const amount = parseFloat(discountValue);
     const max = item.price * item.quantity;
     if (isNaN(amount) || amount <= 0 || amount > max) return;
-    applyDiscount(item.id, discountValue);
+    applyDiscount(item, discountValue);
     setDiscountDialog({ open: false, item: null });
   };
 
@@ -626,6 +1340,17 @@ const SalesTerminal = () => {
 
   const handleCashConfirm = () => {
     processSale("cash");
+  };
+
+  const handleDrawerDone = () => {
+    setWaitingDrawer(false);
+    setCashDialogOpen(false);
+    setCart([]);
+    setPaymentMethod("");
+    setCashAmount("");
+    setChange(0);
+    setBarcode("");
+    refocusBarcode();
   };
 
   const generateReceiptHTML = (method) => {
@@ -662,9 +1387,16 @@ const SalesTerminal = () => {
     lines.push(`<div class="sep"></div>`);
 
     cart.forEach((item) => {
-      const fp = item.finalPrice || item.price;
-      const lineTotal = fp * item.quantity;
-      const unit = item.isWeightItem ? "kg" : item.isBoxItem ? "cj" : "pza";
+      const promo = promoInfo(item, item.quantity).applied;
+      const fp = lineUnitPrice(item, item.quantity);
+      const lt = lineTotal(item, item.quantity);
+      const unit = item.isWeightItem
+        ? "kg"
+        : item.isBoxItem
+          ? unitLabels(item.sale_unit)?.short || "cj"
+          : item.isPackItem
+            ? "pq"
+            : "pza";
       const qtyDisplay = item.isWeightItem
         ? item.quantity.toFixed(3)
         : item.quantity;
@@ -672,8 +1404,16 @@ const SalesTerminal = () => {
         item.name.length > 24 ? item.name.substring(0, 22) + ".." : item.name;
       lines.push(`<div style="font-weight:bold;font-size:12px">${name}</div>`);
       lines.push(
-        `<div style="display:flex;justify-content:space-between;font-size:10px"><span>${qtyDisplay} ${unit} x $${fp.toFixed(2)}</span><span>$${lineTotal.toFixed(2)}</span></div>`,
+        `<div style="display:flex;justify-content:space-between;font-size:10px"><span>${qtyDisplay} ${unit} x $${fp.toFixed(2)}</span><span>$${lt.toFixed(2)}</span></div>`,
       );
+      if (promo)
+        lines.push(
+          `<div style="text-align:center;font-size:10px;color:purple">${
+            promo.type === "mayoreo"
+              ? `Mayoreo desde ${promo.qty} pz`
+              : `Oferta ${promo.qty} x $${promo.price.toFixed(2)}`
+          }</div>`,
+        );
       if (item.discount_percent > 0)
         lines.push(
           `<div style="text-align:center;font-size:10px;color:red">Descuento: -${item.discount_percent}%</div>`,
@@ -688,16 +1428,27 @@ const SalesTerminal = () => {
     });
 
     lines.push(`<div class="sep"></div>`);
+    const effSubtotal =
+      method === "cash" ? roundCash(subtotal) : subtotal;
+    const effTotal = method === "cash" ? roundCash(total) : total;
+    const effDiscount = effSubtotal - effTotal;
     lines.push(
-      `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Subtotal:</span><span>$${subtotal.toFixed(2)}</span></div>`,
+      `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Subtotal:</span><span>$${effSubtotal.toFixed(2)}</span></div>`,
     );
-    if (cart.some((i) => i.discount_percent > 0 || i.discount > 0))
+    if (
+      cart.some(
+        (i) =>
+          i.discount_percent > 0 ||
+          i.discount > 0 ||
+          promoInfo(i, i.quantity).applied,
+      )
+    )
       lines.push(
-        `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Descuentos:</span><span>-$${(subtotal - total).toFixed(2)}</span></div>`,
+        `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Descuentos:</span><span>-$${effDiscount.toFixed(2)}</span></div>`,
       );
     lines.push(`<div class="sep"></div>`);
     lines.push(
-      `<div style="display:flex;justify-content:space-between;font-weight:bold;font-size:14px"><span>TOTAL:</span><span>$${total.toFixed(2)}</span></div>`,
+      `<div style="display:flex;justify-content:space-between;font-weight:bold;font-size:14px"><span>TOTAL:</span><span>$${effTotal.toFixed(2)}</span></div>`,
     );
     lines.push(`<div class="sep"></div>`);
     const metodo =
@@ -739,22 +1490,28 @@ const SalesTerminal = () => {
 
   return (
     <Box
+      ref={layoutRef}
       sx={{
         display: "flex",
         height: "calc(100vh - 120px)",
         overflow: "hidden",
+        gap: 2,
       }}
     >
       <Box
         sx={{
-          width: hasCart ? DRAWER_WIDTH : 0,
-          minWidth: hasCart ? DRAWER_WIDTH : 0,
+          width: hasCart ? `min(${effectiveCartWidth}px, 55%)` : 0,
+          minWidth: hasCart ? `min(${effectiveCartWidth}px, 55%)` : 0,
           overflow: "hidden",
           flexShrink: 0,
-          transition: "width 0.35s ease, min-width 0.35s ease",
+          transition: hasCart ? "none" : "width 0.35s ease, min-width 0.35s ease",
           background: (t) => t.palette.background.paper,
           borderLeft: hasCart ? "1px solid" : "none",
           borderColor: "divider",
+          borderRadius: "8px",
+          boxShadow: isDark
+            ? "0 4px 24px rgba(0, 0, 0, 0.45)"
+            : "0 6px 24px rgba(37, 99, 235, 0.10)",
           display: "flex",
           flexDirection: "column",
         }}
@@ -777,19 +1534,31 @@ const SalesTerminal = () => {
               display: "flex",
               alignItems: "center",
               gap: 1,
+              color: focusZone === "cart" ? theme.palette.primary.main : "text.primary",
             }}
           >
-            <ShoppingCart
-              sx={{ fontSize: 20, color: theme.palette.primary.main }}
-            />
+            <ShoppingCart size={20} color={theme.palette.primary.main} />
             Carrito ({cart.length})
+            {focusZone === "cart" && (
+              <Chip
+                label="↑↓ navega · ←→ cantidad"
+                size="small"
+                sx={{
+                  height: 18,
+                  fontSize: "0.6rem",
+                  ml: 0.5,
+                  bgcolor: "primary.main",
+                  color: "#fff",
+                }}
+              />
+            )}
           </Typography>
           <IconButton
             size="small"
             onClick={() => setCart([])}
             sx={{ color: "error.main" }}
           >
-            <DeleteSweep fontSize="small" />
+            <Trash2 size={18} />
           </IconButton>
         </Box>
 
@@ -806,182 +1575,24 @@ const SalesTerminal = () => {
                 gap: 1,
               }}
             >
-              <ShoppingCart sx={{ fontSize: 56, color: "text.secondary" }} />
+              <ShoppingCart size={56} color={theme.palette.text.secondary} />
               <Typography variant="body2" color="textSecondary">
                 Sin productos
               </Typography>
             </Box>
           ) : (
-            cart.map((item) => {
-              const fp = item.finalPrice || item.price;
-              return (
-                <Paper
-                  key={item.id}
-                  elevation={0}
-                  sx={{
-                    mb: 1,
-                    p: 1.5,
-                    background: isDark
-                      ? "rgba(59,130,246,0.04)"
-                      : "rgba(37,99,235,0.03)",
-                    border: `1px solid ${isDark ? "rgba(59,130,246,0.1)" : "rgba(37,99,235,0.08)"}`,
-                    borderRadius: 2,
-                  }}
-                >
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 0.5,
-                          flexWrap: "wrap",
-                        }}
-                      >
-                        <Typography
-                          variant="body2"
-                          sx={{ fontWeight: 600, fontSize: "0.85rem" }}
-                        >
-                          {item.name}
-                        </Typography>
-                        {item.isWeightItem && (
-                          <Chip
-                            label="kg"
-                            size="small"
-                            sx={{
-                              height: 16,
-                              fontSize: "0.55rem",
-                              bgcolor: "rgba(59,130,246,0.12)",
-                              color: theme.palette.primary.main,
-                              fontWeight: 700,
-                            }}
-                          />
-                        )}
-                        {item.isBoxItem && (
-                          <Chip
-                            label="caja"
-                            size="small"
-                            sx={{
-                              height: 16,
-                              fontSize: "0.55rem",
-                              bgcolor: "rgba(16,185,129,0.12)",
-                              color: theme.palette.success.main,
-                              fontWeight: 700,
-                            }}
-                          />
-                        )}
-                        {item.discount_percent > 0 && (
-                          <Chip
-                            label={`-${item.discount_percent}%`}
-                            color="error"
-                            size="small"
-                            sx={{ ml: 0.5, height: 16, fontSize: "0.55rem" }}
-                          />
-                        )}
-                        {item.discount > 0 && (
-                          <Chip
-                            label={`-$${item.discount.toFixed(2)}`}
-                            color="error"
-                            size="small"
-                            sx={{ ml: 0.5, height: 16, fontSize: "0.55rem" }}
-                          />
-                        )}
-                      </Box>
-                      <Typography variant="caption" color="textSecondary">
-                        {item.discount_percent > 0 || item.discount > 0 ? (
-                          <>
-                            <span style={{ textDecoration: "line-through" }}>
-                              ${item.price.toFixed(2)}
-                            </span>{" "}
-                            ${fp.toFixed(2)}
-                          </>
-                        ) : (
-                          `$${item.price.toFixed(2)}`
-                        )}{" "}
-                        {item.isWeightItem
-                          ? "/ kg"
-                          : item.isBoxItem
-                            ? "/ caja"
-                            : "c/u"}
-                      </Typography>
-                    </Box>
-                    <Stack direction="row" alignItems="center" spacing={0.3}>
-                      <IconButton
-                        size="small"
-                        onClick={() =>
-                          updateQuantity(item.id, -1, item.isWeightItem)
-                        }
-                        sx={{ width: 24, height: 24 }}
-                      >
-                        <Remove sx={{ fontSize: 14 }} />
-                      </IconButton>
-                      <Typography
-                        variant="body2"
-                        sx={{
-                          fontWeight: 700,
-                          minWidth: item.isWeightItem ? 46 : 26,
-                          textAlign: "center",
-                          fontSize: "0.85rem",
-                        }}
-                      >
-                        {item.isWeightItem
-                          ? `${item.quantity.toFixed(3)}`
-                          : item.quantity}
-                      </Typography>
-                      <IconButton
-                        size="small"
-                        onClick={() =>
-                          updateQuantity(item.id, 1, item.isWeightItem)
-                        }
-                        sx={{ width: 24, height: 24 }}
-                      >
-                        <Add sx={{ fontSize: 14 }} />
-                      </IconButton>
-                    </Stack>
-                    <Typography
-                      variant="body2"
-                      sx={{
-                        fontWeight: 700,
-                        minWidth: 70,
-                        textAlign: "right",
-                        color: theme.palette.success.main,
-                        fontSize: "0.85rem",
-                      }}
-                    >
-                      ${(fp * item.quantity).toFixed(2)}
-                    </Typography>
-                    {!!item.has_discount && item.discount_percent <= 0 && (
-                      <IconButton
-                        size="small"
-                        onClick={() => openDiscountDialog(item)}
-                        sx={{
-                          width: 28,
-                          height: 28,
-                          color:
-                            item.discount > 0
-                              ? "error.main"
-                              : "text.secondary",
-                          bgcolor:
-                            item.discount > 0
-                              ? "rgba(239,68,68,0.1)"
-                              : "transparent",
-                        }}
-                        title="Descuento del producto"
-                      >
-                        <Percent sx={{ fontSize: 16 }} />
-                      </IconButton>
-                    )}
-                    <IconButton
-                      size="small"
-                      onClick={() => removeFromCart(item.id)}
-                      sx={{ color: "error.main", width: 28, height: 28 }}
-                    >
-                      <DeleteOutlined sx={{ fontSize: 16 }} />
-                    </IconButton>
-                  </Box>
-                </Paper>
-              );
-            })
+            cart.map((item, index) => (
+              <CartItem
+                key={lineKeyOf(item)}
+                item={item}
+                index={index}
+                isSelected={selectedCartItemIndex === index && focusZone === "cart"}
+                onSelect={onSelectItem}
+                onQuantityChange={updateQuantity}
+                onRemove={removeFromCart}
+                onDiscount={openDiscountDialog}
+              />
+            ))
           )}
         </Box>
 
@@ -996,10 +1607,10 @@ const SalesTerminal = () => {
                 Subtotal
               </Typography>
               <Typography variant="caption" color="textSecondary">
-                ${subtotal.toFixed(2)}
+                ${displaySubtotal.toFixed(2)}
               </Typography>
             </Box>
-            {discountTotal > 0 && (
+            {displayDiscountTotal > 0 && (
               <Box
                 sx={{
                   display: "flex",
@@ -1011,7 +1622,7 @@ const SalesTerminal = () => {
                   Descuentos
                 </Typography>
                 <Typography variant="caption" color="error">
-                  -${discountTotal.toFixed(2)}
+                  -${displayDiscountTotal.toFixed(2)}
                 </Typography>
               </Box>
             )}
@@ -1030,17 +1641,28 @@ const SalesTerminal = () => {
                 variant="h5"
                 sx={{ fontWeight: 800, color: theme.palette.success.main }}
               >
-                ${total.toFixed(2)}
+                ${displayTotal.toFixed(2)}
               </Typography>
             </Box>
           </Box>
 
-          <Stack direction="row" spacing={1} sx={{ mb: 1.5 }}>
+          <Stack
+            direction="row"
+            spacing={1}
+            sx={{
+              mb: 1.5,
+              p: focusZone === "payment" ? 0.5 : 0,
+              borderRadius: "6px",
+              border: focusZone === "payment" ? "2px solid" : "2px solid transparent",
+              borderColor: focusZone === "payment" ? theme.palette.primary.main : "transparent",
+              transition: "all 0.15s ease",
+            }}
+          >
             <Button
               variant={paymentMethod === "cash" ? "contained" : "outlined"}
               color={paymentMethod === "cash" ? "success" : "inherit"}
               size="small"
-              startIcon={<AttachMoney />}
+              startIcon={<DollarSign />}
               onClick={() => handlePayClick("cash")}
               sx={{
                 flex: 1,
@@ -1076,7 +1698,7 @@ const SalesTerminal = () => {
               variant={paymentMethod === "transfer" ? "contained" : "outlined"}
               color={paymentMethod === "transfer" ? "warning" : "inherit"}
               size="small"
-              startIcon={<AccountBalance />}
+              startIcon={<Landmark />}
               onClick={() => handlePayClick("transfer")}
               sx={{
                 flex: 1,
@@ -1091,6 +1713,15 @@ const SalesTerminal = () => {
               Transf.
             </Button>
           </Stack>
+
+          {focusZone === "payment" && (
+            <Typography
+              variant="caption"
+              sx={{ display: "block", textAlign: "center", mb: 0.5, color: "primary.main", fontWeight: 600 }}
+            >
+              ←→ cambiar método · ↑↓ = carrito · Tab = buscador · Enter = finalizar
+            </Typography>
+          )}
 
           <Stack direction="row" spacing={1}>
             <Button
@@ -1120,7 +1751,7 @@ const SalesTerminal = () => {
             <Button
               variant="contained"
               size="large"
-              startIcon={<PointOfSale />}
+              startIcon={<Banknote />}
               disabled={!paymentMethod}
               onClick={() => {
                 if (paymentMethod === "cash") setCashDialogOpen(true);
@@ -1152,35 +1783,77 @@ const SalesTerminal = () => {
         </Box>
       </Box>
 
+      {hasCart && (
+        <Box
+          onMouseDown={startResize}
+          onDoubleClick={() => setCartWidth(0)}
+          sx={{
+            width: 7,
+            position: "relative",
+            cursor: "col-resize",
+            flexShrink: 0,
+            alignSelf: "stretch",
+            mx: -1,
+            zIndex: 2,
+            "&::after": {
+              content: '""',
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              left: "50%",
+              width: 3,
+              transform: "translateX(-50%)",
+              background: (t) =>
+                isDark
+                  ? "rgba(148,163,184,0.25)"
+                  : "rgba(100,116,139,0.2)",
+              borderRadius: "2px",
+            },
+            "&:hover::after": {
+              background: theme.palette.primary.main,
+            },
+          }}
+        />
+      )}
+
       <Box
         sx={{
           flex: 1,
           display: "flex",
           justifyContent: "center",
-          p: 2,
+          alignItems: "stretch",
+          px: 2,
           minWidth: 0,
         }}
       >
-        <Box
-          sx={{
-            width: "100%",
-            maxWidth: hasCart ? 700 : 900,
-            display: "flex",
-            flexDirection: "column",
-            transition: "max-width 0.35s ease",
-          }}
-        >
-          <Card
+<Box
+            sx={{
+              width: "100%",
+              maxWidth: isXLargeScreen ? 1200 : isLargeScreen ? 950 : isMediumScreen ? 750 : isSmallScreen ? 550 : 700,
+display: "flex",
+              flexDirection: "column",
+              height: "100%",
+              minHeight: 0,
+              p: 0,
+              transition: "max-width 0.35s ease",
+              borderRadius: "8px",
+            }}
+          >
+            <Card
             sx={{
               flex: 1,
               display: "flex",
               flexDirection: "column",
+              minHeight: 0,
               p: 3,
               background: isDark
                 ? `linear-gradient(145deg, ${theme.palette.background.paper} 0%, rgba(30,41,59,0.7) 100%)`
                 : `linear-gradient(145deg, ${theme.palette.background.paper} 0%, rgba(241,245,249,0.7) 100%)`,
               border: `1px solid ${isDark ? "rgba(148,163,184,0.08)" : "rgba(37,99,235,0.08)"}`,
-              borderRadius: 3,
+              borderRadius: "8px",
+              boxShadow: isDark
+                ? "0 4px 24px rgba(0, 0, 0, 0.45)"
+                : "0 6px 24px rgba(37, 99, 235, 0.10)",
               textAlign: "center",
             }}
           >
@@ -1202,7 +1875,7 @@ const SalesTerminal = () => {
                     background: isDark
                       ? "rgba(148,163,184,0.06)"
                       : "rgba(100,116,139,0.08)",
-                    borderRadius: 4,
+                    borderRadius: "12px",
                     overflow: "hidden",
                     mx: "auto",
                     maxWidth: 160,
@@ -1215,7 +1888,7 @@ const SalesTerminal = () => {
                       height: "100%",
                       background: `linear-gradient(90deg, transparent, ${theme.palette.primary.main}, transparent)`,
                       animation: `${scanMove} 2s ease-in-out infinite`,
-                      borderRadius: 4,
+                      borderRadius: "12px",
                     }}
                   />
                 </Box>
@@ -1233,41 +1906,60 @@ const SalesTerminal = () => {
                 Escanear código de barras o buscar producto
               </Typography>
 
-              <TextField
-                fullWidth
-                id="barcode-input"
-                variant="outlined"
-                value={barcode}
-                onChange={(e) => setBarcode(e.target.value)}
-                onKeyDown={handleBarcodeSubmit}
-                autoFocus
-                placeholder={
-                  /^\d/.test(barcode)
-                    ? "Código de barras (mín. 5 dígitos)"
-                    : "Nombre del producto (mín. 3 caracteres)"
-                }
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <Search sx={{ color: "text.secondary", fontSize: 18 }} />
-                    </InputAdornment>
-                  ),
-                  sx: {
-                    borderRadius: 2,
-                    background: isDark
-                      ? "rgba(30,41,59,0.4)"
-                      : "rgba(241,245,249,0.7)",
-                    fontSize: "0.9rem",
+<TextField
+              fullWidth
+              id="barcode-input"
+              variant="outlined"
+              value={barcode}
+              onChange={(e) => setBarcode(e.target.value)}
+              onKeyDown={handleBarcodeSubmit}
+              autoFocus
+              sx={{
+                borderRadius: "8px",
+                background: isDark
+                  ? "rgba(30,41,59,0.4)"
+                  : "rgba(241,245,249,0.7)",
+                padding: "12px 16px",
+                fontSize: "1.15rem",
+                "& .MuiOutlinedInput-root": {
+                  borderRadius: "8px",
+                  "&.Mui-focused": {
+                    boxShadow: "0 0 0 3px rgba(59, 130, 246, 0.18)",
                   },
-                }}
-                sx={{
-                  "& .MuiOutlinedInput-input": { py: 1.2, textAlign: "center" },
-                }}
-              />
+                },
+                "& .MuiOutlinedInput-notchedLabel": {
+                  left: "14px",
+                  top: "8px",
+                  fontSize: "0.75rem",
+                },
+                "& .MuiInputBase-input": {
+                  padding: 0,
+                },
+              }}
+              placeholder={
+                /^\d/.test(barcode)
+                  ? "Código de barras (mín. 5 dígitos)"
+                  : "Nombre del producto (mín. 3 caracteres)"
+              }
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <Search size={20} color={theme.palette.text.secondary} />
+                  </InputAdornment>
+                ),
+                sx: {
+                  borderRadius: "8px",
+                  background: isDark
+                    ? "rgba(30,41,59,0.4)"
+                    : "rgba(241,245,249,0.7)",
+                  fontSize: "1.15rem",
+                },
+              }}
+            />
 
               <Stack
                 direction="row"
-                spacing={0.5}
+                spacing={1}
                 justifyContent="center"
                 flexWrap="wrap"
                 useFlexGap
@@ -1277,6 +1969,7 @@ const SalesTerminal = () => {
                   ["F1", "Ayuda"],
                   ["F2", "Sin código"],
                   ["F6", "Descuento"],
+                  ["F9", "Cantidad"],
                   ["F8", "Vender"],
                   ["F10", "Retiro"],
                   ["F11", "Cerrar caja"],
@@ -1287,36 +1980,69 @@ const SalesTerminal = () => {
                     size="small"
                     variant="outlined"
                     sx={{
-                      height: 20,
-                      fontSize: "0.55rem",
-                      color: "text.secondary",
-                      borderColor: isDark
-                        ? "rgba(148,163,184,0.12)"
-                        : "rgba(148,163,184,0.25)",
+                      height: 28,
+                      fontSize: "0.72rem",
+                      fontWeight: 600,
+                      color: isDark ? "#e2e8f0" : "#0f172a",
+                      borderColor: "rgba(100,116,139,0.35)",
+                      borderRadius: "4px",
                     }}
                   />
                 ))}
+                {pendingQty > 1 && (
+                  <Chip
+                    label={`Próximo: x${pendingQty}`}
+                    size="small"
+                    color="primary"
+                    variant="filled"
+                    sx={{
+                      height: 28,
+                      fontSize: "0.72rem",
+                      fontWeight: 700,
+                      borderRadius: "4px",
+                    }}
+                  />
+                )}
+                <Chip
+                  icon={<Smartphone size={14} />}
+                  label="Recarga · Ctrl+R"
+                  onClick={() => setRecargaDialogOpen(true)}
+                  sx={{
+                    height: 28,
+                    fontSize: "0.72rem",
+                    fontWeight: 700,
+                    borderRadius: "4px",
+                    cursor: "pointer",
+                    bgcolor: "#1e293b",
+                    color: "#e2e8f0",
+                    "&:hover": { bgcolor: "#334155" },
+                  }}
+                />
               </Stack>
             </Box>
 
-            <Box sx={{ flex: 1, overflow: "auto", mt: 2 }}>
+            <Box ref={suggestionListRef} sx={{ flex: 1, overflow: "auto", mt: 2 }}>
               {showSuggestions && searchResults.length > 0 && (
                 <Box sx={{ animation: "fadeIn 0.2s ease-out" }}>
-                  {searchResults.slice(0, 8).map((product, index) => (
+                  {searchResults.map((product, index) => (
                     <ListItemButton
                       key={product.id}
+                      data-suggestion-idx={index}
                       selected={index === selectedSuggestionIndex}
                       onClick={() => {
-                        addProductToCart(product);
-                        setBarcode("");
-                        setShowSuggestions(false);
-                        setSelectedSuggestionIndex(-1);
+                        const { qty } = parseQtyPrefix(barcode);
+                        addProductToCart(product, qty ?? undefined);
                       }}
                       sx={{
                         py: 1.2,
                         px: 2,
                         borderRadius: 1,
                         mb: 0.5,
+                        "&.Mui-selected": {
+                          backgroundColor: isDark
+                            ? "rgba(59,130,246,0.15)"
+                            : "rgba(37,99,235,0.1)",
+                        },
                         "&:hover": {
                           backgroundColor: isDark
                             ? "rgba(59,130,246,0.08)"
@@ -1335,31 +2061,39 @@ const SalesTerminal = () => {
                         <Box sx={{ textAlign: "left", minWidth: 0 }}>
                           <Typography
                             variant="body2"
-                            sx={{ fontWeight: 500, fontSize: "0.85rem" }}
+                            sx={{ fontWeight: 600, fontSize: "1rem" }}
                           >
                             {product.name}
                             {product.sale_unit === "weight" && (
                               <Chip
+                                icon={<Carrot size={12} />}
                                 label="kg"
                                 size="small"
                                 sx={{
                                   ml: 0.5,
-                                  height: 16,
-                                  fontSize: "0.5rem",
+                                  height: 20,
+                                  fontSize: "0.65rem",
                                   bgcolor: "rgba(59,130,246,0.12)",
                                   color: theme.palette.primary.main,
                                   fontWeight: 700,
                                 }}
                               />
                             )}
-                            {product.sale_unit === "box" && (
+                            {isContainerUnit(product.sale_unit) && (
                               <Chip
-                                label="caja"
+                                icon={
+                                  product.sale_unit === "package" ? (
+                                    <Layers size={12} />
+                                  ) : (
+                                    <Package size={12} />
+                                  )
+                                }
+                                label={unitLabels(product.sale_unit).badge}
                                 size="small"
                                 sx={{
                                   ml: 0.5,
-                                  height: 16,
-                                  fontSize: "0.5rem",
+                                  height: 20,
+                                  fontSize: "0.65rem",
                                   bgcolor: "rgba(16,185,129,0.12)",
                                   color: theme.palette.success.main,
                                   fontWeight: 700,
@@ -1381,7 +2115,7 @@ const SalesTerminal = () => {
                             sx={{
                               fontWeight: 600,
                               color: theme.palette.success.main,
-                              fontSize: "0.85rem",
+                              fontSize: "0.95rem",
                             }}
                           >
                             $
@@ -1453,7 +2187,9 @@ const SalesTerminal = () => {
               {searchTimedOut && (
                 <Box sx={{ textAlign: "center", py: 4, opacity: 0.6 }}>
                   <Search
-                    sx={{ fontSize: 40, color: "text.secondary", mb: 1 }}
+                    size={40}
+                    color={theme.palette.text.secondary}
+                    style={{ marginBottom: 8 }}
                   />
                   <Typography variant="body2" color="textSecondary">
                     La búsqueda está tardando demasiado
@@ -1467,7 +2203,9 @@ const SalesTerminal = () => {
                 searchResults.length === 0 && (
                   <Box sx={{ textAlign: "center", py: 4, opacity: 0.6 }}>
                     <Search
-                      sx={{ fontSize: 40, color: "text.secondary", mb: 1 }}
+                      size={40}
+                      color={theme.palette.text.secondary}
+                      style={{ marginBottom: 8 }}
                     />
                     <Typography variant="body2" color="textSecondary">
                       No se encontraron productos
@@ -1505,7 +2243,7 @@ const SalesTerminal = () => {
       >
         <DialogTitle>
           <Stack direction="row" spacing={1.5} alignItems="center">
-            <MonitorWeight sx={{ color: theme.palette.primary.main }} />
+            <Scale size={22} color={theme.palette.primary.main} />
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
               Peso del Producto
             </Typography>
@@ -1538,18 +2276,22 @@ const SalesTerminal = () => {
               <TextField
                 fullWidth
                 label="Peso (kg)"
-                type="number"
+                type="text"
+                inputMode="decimal"
                 value={weightAmount}
-                onChange={(e) => setWeightAmount(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value.replace(",", ".");
+                  if (/^\d*\.?\d{0,3}$/.test(v)) setWeightAmount(v);
+                }}
                 autoFocus
-                inputProps={{ step: 0.001, min: 0.001 }}
+                placeholder="Ej: 4.800"
                 sx={{ mb: 2 }}
               />
               {parseFloat(weightAmount) > 0 && (
                 <Box
                   sx={{
                     p: 2,
-                    borderRadius: 2,
+                    borderRadius: "8px",
                     background: isDark
                       ? "rgba(16, 185, 129, 0.1)"
                       : "rgba(16, 185, 129, 0.06)",
@@ -1593,7 +2335,7 @@ const SalesTerminal = () => {
             onClick={confirmWeightProduct}
             variant="outlined"
             disabled={!weightAmount || parseFloat(weightAmount) <= 0}
-            startIcon={<MonitorWeight />}
+            startIcon={<Scale />}
             sx={{
               borderColor: "success.main",
               color: "success.main",
@@ -1620,7 +2362,7 @@ const SalesTerminal = () => {
             handleDiscountApply();
           }
         }}
-        PaperProps={{ sx: { borderRadius: "12px" } }}
+        PaperProps={{ sx: { borderRadius: "6px" } }}
       >
         <DialogTitle component="div" sx={{ pb: 1 }}>
           <Typography component="div" variant="h6" sx={{ fontWeight: 700 }}>
@@ -1645,7 +2387,7 @@ const SalesTerminal = () => {
                   input: {
                     startAdornment: (
                       <InputAdornment position="start">
-                        <AttachMoney sx={{ fontSize: 18, color: "#64748b" }} />
+                        <DollarSign size={18} color="#64748b" />
                       </InputAdornment>
                     ),
                   },
@@ -1655,7 +2397,7 @@ const SalesTerminal = () => {
               <Box
                 sx={{
                   p: 2,
-                  borderRadius: 2,
+                  borderRadius: "8px",
                   background: isDark
                     ? "rgba(16, 185, 129, 0.1)"
                     : "rgba(16, 185, 129, 0.06)",
@@ -1696,7 +2438,7 @@ const SalesTerminal = () => {
             {discountDialog.item?.discount > 0 && (
               <Button
                 onClick={() => {
-                  clearDiscount(discountDialog.item.id);
+                  clearDiscount(discountDialog.item);
                   setDiscountDialog({ open: false, item: null });
                 }}
                 variant="outlined"
@@ -1740,7 +2482,9 @@ const SalesTerminal = () => {
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
-            handleBoxChoice(false);
+            const active = document.activeElement;
+            if (active && typeof active.click === "function") active.click();
+            else confirmBoxChoice("box");
           }
           if (e.key === "ArrowUp") {
             e.preventDefault();
@@ -1754,7 +2498,7 @@ const SalesTerminal = () => {
       >
         <DialogTitle>
           <Stack direction="row" spacing={1.5} alignItems="center">
-            <Store sx={{ color: theme.palette.primary.main }} />
+            <Store size={22} color={theme.palette.primary.main} />
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
               Seleccionar formato
             </Typography>
@@ -1771,16 +2515,27 @@ const SalesTerminal = () => {
                   direction="row"
                   spacing={1}
                   justifyContent="center"
-                  sx={{ mt: 1 }}
+                  sx={{ mt: 1, flexWrap: "wrap", gap: 0.5 }}
                 >
+                  {boxChoiceDialog.product.box_qty > 0 && (
+                    <Chip
+                      label={`${unitLabels(boxChoiceDialog.product.sale_unit)?.containerNoun || "Caja"}: $${boxChoiceDialog.product.box_price?.toFixed(2)}`}
+                      variant="outlined"
+                      size="small"
+                      color="primary"
+                    />
+                  )}
+                  {boxChoiceDialog.product.sale_unit === "boxpack" &&
+                  boxChoiceDialog.product.pack_qty > 0 && (
+                    <Chip
+                      label={`Paquete: $${packPriceOf(boxChoiceDialog.product)?.toFixed(2)}`}
+                      variant="outlined"
+                      size="small"
+                      color="secondary"
+                    />
+                  )}
                   <Chip
-                    label={`Caja: $${boxChoiceDialog.product.box_price?.toFixed(2)}`}
-                    variant="outlined"
-                    size="small"
-                    color="primary"
-                  />
-                  <Chip
-                    label={`Pieza: $${boxChoiceDialog.product.price.toFixed(2)}`}
+                    label={`Pieza: $${piecePriceOf(boxChoiceDialog.product).toFixed(2)}`}
                     variant="outlined"
                     size="small"
                   />
@@ -1791,35 +2546,78 @@ const SalesTerminal = () => {
                     color="text.secondary"
                     sx={{ display: "block", mt: 0.5 }}
                   >
-                    {boxChoiceDialog.product.box_qty} piezas por caja
+                    {boxChoiceDialog.product.box_qty}{" "}
+                    {unitLabels(boxChoiceDialog.product.sale_unit)?.piecesPer ||
+                      "piezas por caja"}
+                  </Typography>
+                )}
+                {boxChoiceDialog.product.sale_unit === "boxpack" &&
+                  boxChoiceDialog.product.pack_qty > 0 && (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ display: "block", mt: 0.5 }}
+                  >
+                    {boxChoiceDialog.product.pack_qty} piezas por paquete
                   </Typography>
                 )}
               </Box>
               <Stack direction="column" spacing={1.5}>
-                <Button
-                  fullWidth
-                  size="large"
-                  variant="outlined"
-                  autoFocus
-                  onClick={() => confirmBoxChoice("box")}
-                  sx={{
-                    py: 2,
-                    borderColor: theme.palette.primary.main,
-                    color: theme.palette.primary.main,
-                    fontWeight: 700,
-                    fontSize: "0.9rem",
-                  }}
-                >
-                  <Stack spacing={0.5} alignItems="center">
-                    <span>Caja</span>
-                    <Typography
-                      variant="caption"
-                      sx={{ fontWeight: 400, opacity: 0.7 }}
-                    >
-                      ${boxChoiceDialog.product.box_price?.toFixed(2)}
-                    </Typography>
-                  </Stack>
-                </Button>
+                {boxChoiceDialog.product.box_qty > 0 && (
+                  <Button
+                    fullWidth
+                    size="large"
+                    variant="outlined"
+                    autoFocus
+                    onClick={() => confirmBoxChoice("box")}
+                    sx={{
+                      py: 2,
+                      borderColor: theme.palette.primary.main,
+                      color: theme.palette.primary.main,
+                      fontWeight: 700,
+                      fontSize: "0.9rem",
+                    }}
+                  >
+                    <Stack spacing={0.5} alignItems="center">
+                      <span>
+                        {unitLabels(boxChoiceDialog.product.sale_unit)
+                          ?.containerNoun || "Caja"}
+                      </span>
+                      <Typography
+                        variant="caption"
+                        sx={{ fontWeight: 400, opacity: 0.7 }}
+                      >
+                        ${boxChoiceDialog.product.box_price?.toFixed(2)}
+                      </Typography>
+                    </Stack>
+                  </Button>
+                )}
+                {boxChoiceDialog.product.sale_unit === "boxpack" &&
+                  boxChoiceDialog.product.pack_qty > 0 && (
+                  <Button
+                    fullWidth
+                    size="large"
+                    variant="outlined"
+                    onClick={() => confirmBoxChoice("pack")}
+                    sx={{
+                      py: 2,
+                      borderColor: theme.palette.secondary.main,
+                      color: theme.palette.secondary.main,
+                      fontWeight: 700,
+                      fontSize: "0.9rem",
+                    }}
+                  >
+                    <Stack spacing={0.5} alignItems="center">
+                      <span>Paquete</span>
+                      <Typography
+                        variant="caption"
+                        sx={{ fontWeight: 400, opacity: 0.7 }}
+                      >
+                        ${packPriceOf(boxChoiceDialog.product)?.toFixed(2)}
+                      </Typography>
+                    </Stack>
+                  </Button>
+                )}
                 <Button
                   fullWidth
                   size="large"
@@ -1833,7 +2631,7 @@ const SalesTerminal = () => {
                       variant="caption"
                       sx={{ fontWeight: 400, opacity: 0.7 }}
                     >
-                      ${boxChoiceDialog.product.price.toFixed(2)}
+                      ${piecePriceOf(boxChoiceDialog.product).toFixed(2)}
                     </Typography>
                   </Stack>
                 </Button>
@@ -1843,7 +2641,10 @@ const SalesTerminal = () => {
         </DialogContent>
         <DialogActions sx={{ p: 2.5 }}>
           <CancelButton
-            onClick={() => setBoxChoiceDialog({ open: false, product: null })}
+            onClick={() => {
+              setBoxChoiceDialog({ open: false, product: null });
+              refocusBarcode();
+            }}
           >
             Cancelar
           </CancelButton>
@@ -1852,17 +2653,27 @@ const SalesTerminal = () => {
 
       <Dialog
         open={cashDialogOpen}
-        onClose={() => setCashDialogOpen(false)}
+        onClose={() => {
+          if (waitingDrawer) {
+            handleDrawerDone();
+          } else {
+            setCashDialogOpen(false);
+          }
+        }}
         maxWidth="xs"
         fullWidth
         onKeyDown={(e) => {
-          if (e.key === "Enter" && cashAmount && change >= 0)
+          if (waitingDrawer && e.key === "Enter") {
+            e.preventDefault();
+            handleDrawerDone();
+          } else if (e.key === "Enter" && cashAmount && change >= 0) {
             handleCashConfirm();
+          }
         }}
       >
         <DialogTitle>
           <Stack direction="row" spacing={1.5} alignItems="center">
-            <AttachMoney sx={{ color: theme.palette.success.main }} />
+            <DollarSign size={22} color={theme.palette.success.main} />
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
               Pago en Efectivo
             </Typography>
@@ -1871,24 +2682,38 @@ const SalesTerminal = () => {
         <DialogContent>
           <Box sx={{ py: 1 }}>
             <Typography
-              variant="h4"
+              variant="body1"
+              sx={{
+                textAlign: "center",
+                mb: 0.5,
+                fontWeight: 700,
+                color: "text.secondary",
+                fontSize: "1.1rem",
+              }}
+            >
+              Total a pagar
+            </Typography>
+            <Typography
+              variant="h3"
               sx={{
                 textAlign: "center",
                 mb: 2,
                 color: theme.palette.success.main,
                 fontWeight: 800,
+                fontSize: "2.5rem",
+                lineHeight: 1.1,
               }}
             >
-              Total: ${total.toFixed(2)}
+              ${displayTotal.toFixed(2)}
             </Typography>
-            {discountTotal > 0 && (
+            {displayDiscountTotal > 0 && (
               <Typography
                 variant="body2"
                 color="error"
                 textAlign="center"
                 sx={{ mb: 2 }}
               >
-                Descuento aplicado: -${discountTotal.toFixed(2)}
+                Descuento aplicado: -${displayDiscountTotal.toFixed(2)}
               </Typography>
             )}
             <TextField
@@ -1899,14 +2724,15 @@ const SalesTerminal = () => {
               onChange={(e) => {
                 const a = parseFloat(e.target.value) || 0;
                 setCashAmount(e.target.value);
-                setChange(a - total);
+                setChange(a - displayTotal);
               }}
-              autoFocus
+              autoFocus={!waitingDrawer}
+              disabled={waitingDrawer}
               InputProps={{
                 startAdornment: (
                   <InputAdornment position="start">$</InputAdornment>
                 ),
-                sx: { fontSize: "1.5rem", fontWeight: 700 },
+                sx: { fontSize: "2rem", fontWeight: 700 },
               }}
               inputProps={{ step: "0.01", min: "0" }}
               sx={{ mt: 1 }}
@@ -1914,41 +2740,237 @@ const SalesTerminal = () => {
             {cashAmount && (
               <Alert
                 severity={change >= 0 ? "success" : "error"}
-                sx={{ mt: 2 }}
+                sx={{ mt: 2, alignItems: "center", "& .MuiAlert-message": { flex: 1 } }}
               >
-                {change >= 0 ? (
-                  <>
-                    Cambio: <strong>${change.toFixed(2)}</strong>
-                  </>
-                ) : (
-                  <>
-                    Falta: <strong>${Math.abs(change).toFixed(2)}</strong>
-                  </>
-                )}
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                    {change >= 0 ? "Cambio:" : "Falta:"}
+                  </Typography>
+                  <Typography
+                    variant="body1"
+                    sx={{
+                      fontSize: "1.75rem",
+                      fontWeight: 800,
+                      lineHeight: 1.1,
+                    }}
+                  >
+                    ${(change >= 0 ? change : Math.abs(change)).toFixed(2)}
+                  </Typography>
+                </Box>
               </Alert>
             )}
           </Box>
         </DialogContent>
         <DialogActions sx={{ p: 2.5 }}>
-          <CancelButton onClick={() => setCashDialogOpen(false)}>
+          <CancelButton
+            onClick={() => {
+              if (waitingDrawer) {
+                handleDrawerDone();
+              } else {
+                setCashDialogOpen(false);
+              }
+            }}
+          >
+            Cancelar
+          </CancelButton>
+          {waitingDrawer ? (
+            <Button
+              onClick={handleDrawerDone}
+              variant="contained"
+              startIcon={<CheckCircle2 />}
+              autoFocus
+            >
+              Listo
+            </Button>
+          ) : (
+            <Button
+              onClick={handleCashConfirm}
+              variant="outlined"
+              disabled={!cashAmount || change < 0}
+              startIcon={<CheckCircle2 />}
+              sx={{
+                borderColor: "success.main",
+                color: "success.main",
+                backgroundColor: "rgba(16,185,129,0.06)",
+                "&:hover": {
+                  backgroundColor: "rgba(16,185,129,0.12)",
+                  borderColor: "success.main",
+                },
+              }}
+            >
+              Confirmar Venta
+            </Button>
+          )}
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={recargaDialogOpen}
+        onClose={() => {
+          setRecargaDialogOpen(false);
+          setRecargaAmount("");
+          refocusBarcode();
+        }}
+        maxWidth="xs"
+        fullWidth
+        onKeyDown={(e) => {
+          if (e.key === "Enter") confirmRecharge();
+        }}
+      >
+        <DialogTitle>
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <Smartphone size={22} color={theme.palette.primary.main} />
+            <Typography variant="h5" sx={{ fontWeight: 700 }}>
+              Recargas
+            </Typography>
+          </Stack>
+        </DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ py: 1 }}>
+            <Box>
+              <FieldLabel>Selecciona un monto</FieldLabel>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                {PRESET_RECHARGES.map((m) => (
+                  <Chip
+                    key={m}
+                    label={`$${m}`}
+                    clickable
+                    color={recargaAmount === String(m) ? "primary" : "default"}
+                    variant={recargaAmount === String(m) ? "filled" : "outlined"}
+                    onClick={() => setRecargaAmount(String(m))}
+                    sx={{
+                      height: 40,
+                      fontSize: "0.95rem",
+                      fontWeight: 700,
+                      borderRadius: "6px",
+                    }}
+                  />
+                ))}
+              </Stack>
+            </Box>
+            <Box>
+              <FieldLabel>Monto personalizado</FieldLabel>
+              <TextField
+                fullWidth
+                autoFocus
+                type="number"
+                value={recargaAmount}
+                onChange={(e) =>
+                  setRecargaAmount(e.target.value.replace(/[^\d.]/g, ""))
+                }
+                placeholder="Ej: 15"
+                sx={inputSx}
+                inputProps={{ min: 1, step: 1 }}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">$</InputAdornment>
+                  ),
+                }}
+              />
+            </Box>
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ p: 2.5 }}>
+          <CancelButton
+            onClick={() => {
+              setRecargaDialogOpen(false);
+              setRecargaAmount("");
+              refocusBarcode();
+            }}
+          >
             Cancelar
           </CancelButton>
           <Button
-            onClick={handleCashConfirm}
-            variant="outlined"
-            disabled={!cashAmount || change < 0}
-            startIcon={<CheckCircle />}
-            sx={{
-              borderColor: "success.main",
-              color: "success.main",
-              backgroundColor: "rgba(16,185,129,0.06)",
-              "&:hover": {
-                backgroundColor: "rgba(16,185,129,0.12)",
-                borderColor: "success.main",
-              },
+            variant="contained"
+            disabled={
+              !parseFloat(recargaAmount) || parseFloat(recargaAmount) <= 0
+            }
+            onClick={confirmRecharge}
+            endIcon={<CheckCircle2 />}
+          >
+            Agregar al carrito
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={qtyDialogOpen}
+        onClose={() => {
+          setQtyDialogOpen(false);
+          refocusBarcode();
+        }}
+        maxWidth="xs"
+        fullWidth
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            const qty = parseInt(qtyInput, 10);
+            if (qty >= 1) {
+              setPendingQty(qty);
+              setQtyDialogOpen(false);
+              showNotification(`Próxima captura: x${qty}`, "info");
+              refocusBarcode();
+            } else {
+              showNotification("Cantidad inválida", "warning");
+            }
+          }
+        }}
+      >
+        <DialogTitle>
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <Percent size={22} color={theme.palette.primary.main} />
+            <Typography variant="h5" sx={{ fontWeight: 700 }}>
+              Cantidad para próxima captura
+            </Typography>
+          </Stack>
+        </DialogTitle>
+        <DialogContent>
+          <FieldLabel>Cantidad (se reinicia a 1 tras usarse)</FieldLabel>
+          <TextField
+            autoFocus
+            fullWidth
+            type="number"
+            value={qtyInput}
+            onChange={(e) => setQtyInput(e.target.value.replace(/\D/g, ""))}
+            inputProps={{ min: 1, step: 1 }}
+            onFocus={(e) => e.target.select()}
+            sx={inputSx}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">×</InputAdornment>
+              ),
+            }}
+          />
+        </DialogContent>
+        <DialogActions sx={{ p: 2.5 }}>
+          <CancelButton
+            onClick={() => {
+              setQtyDialogOpen(false);
+              refocusBarcode();
             }}
           >
-            Confirmar Venta
+            Cancelar
+          </CancelButton>
+          <Button
+            variant="contained"
+            disabled={!qtyInput || parseInt(qtyInput, 10) < 1}
+            onClick={() => {
+              const qty = parseInt(qtyInput, 10);
+              if (qty >= 1) {
+                setPendingQty(qty);
+                setQtyDialogOpen(false);
+                showNotification(`Próxima captura: x${qty}`, "info");
+                refocusBarcode();
+              }
+            }}
+            endIcon={<CheckCircle2 />}
+          >
+            Listo
           </Button>
         </DialogActions>
       </Dialog>
@@ -1968,7 +2990,7 @@ const SalesTerminal = () => {
       >
         <DialogTitle>
           <Stack direction="row" spacing={1.5} alignItems="center">
-            <QrCode sx={{ color: theme.palette.primary.main }} />
+            <QrCode size={22} color={theme.palette.primary.main} />
             <Typography variant="h5" sx={{ fontWeight: 700 }}>
               Producto Sin Código
             </Typography>
@@ -1976,28 +2998,36 @@ const SalesTerminal = () => {
         </DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ py: 1 }}>
-            <TextField
-              label="Nombre del producto"
-              value={manualProduct.name}
-              onChange={(e) =>
-                setManualProduct({ ...manualProduct, name: e.target.value })
-              }
-              autoFocus
-            />
-            <TextField
-              label="Precio"
-              type="number"
-              value={manualProduct.price}
-              onChange={(e) =>
-                setManualProduct({ ...manualProduct, price: e.target.value })
-              }
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">$</InputAdornment>
-                ),
-              }}
-              inputProps={{ step: "0.01", min: "0" }}
-            />
+            <Box>
+              <FieldLabel>Nombre del producto</FieldLabel>
+              <TextField
+                fullWidth
+                value={manualProduct.name}
+                onChange={(e) =>
+                  setManualProduct({ ...manualProduct, name: e.target.value })
+                }
+                sx={inputSx}
+                autoFocus
+              />
+            </Box>
+            <Box>
+              <FieldLabel>Precio</FieldLabel>
+              <TextField
+                fullWidth
+                type="number"
+                value={manualProduct.price}
+                onChange={(e) =>
+                  setManualProduct({ ...manualProduct, price: e.target.value })
+                }
+                sx={inputSx}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">$</InputAdornment>
+                  ),
+                }}
+                inputProps={{ step: "0.01", min: "0" }}
+              />
+            </Box>
           </Stack>
         </DialogContent>
         <DialogActions sx={{ p: 2.5 }}>
@@ -2013,7 +3043,7 @@ const SalesTerminal = () => {
             onClick={handleManualProduct}
             variant="outlined"
             disabled={!manualProduct.name || !manualProduct.price}
-            startIcon={<AddCircleOutline />}
+            startIcon={<PlusCircle />}
             sx={{
               borderColor: "success.main",
               color: "success.main",
@@ -2044,6 +3074,37 @@ const SalesTerminal = () => {
             sx={{ width: "100%" }}
           >
             {notification.message}
+          </Alert>
+        </Snackbar>,
+        document.body,
+      )}
+
+      {createPortal(
+        <Snackbar
+          open={registerWarn}
+          autoHideDuration={4000}
+          onClose={() => setRegisterWarn(false)}
+          TransitionComponent={Fade}
+          anchorOrigin={{ vertical: "center", horizontal: "center" }}
+          sx={{ zIndex: 9999 }}
+        >
+          <Alert
+            severity="warning"
+            variant="filled"
+            onClose={() => setRegisterWarn(false)}
+            icon={<TriangleAlert size={22} />}
+            sx={{
+              fontSize: "1.05rem",
+              fontWeight: 700,
+              py: 1,
+              px: 2,
+              boxShadow: 4,
+              borderRadius: 2,
+              minWidth: 320,
+              justifyContent: "center",
+            }}
+          >
+            Abre la caja para completar la venta
           </Alert>
         </Snackbar>,
         document.body,

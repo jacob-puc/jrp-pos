@@ -2,7 +2,7 @@ import React from "react";
 import { Skeleton, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper } from "@mui/material";
 
 const TableSkeleton = ({ rows = 5, columns = 4, height = 40 }) => (
-  <TableContainer component={Paper} sx={{ borderRadius: "16px", overflow: "hidden" }}>
+  <TableContainer component={Paper} sx={{ borderRadius: "12px", overflow: "hidden" }}>
     <Table>
       <TableHead>
         <TableRow>
@@ -22,7 +22,7 @@ const TableSkeleton = ({ rows = 5, columns = 4, height = 40 }) => (
                   variant="rectangular"
                   width={c === 0 ? "60%" : c === columns - 1 ? "40%" : "80%"}
                   height={height - 16}
-                  sx={{ borderRadius: "6px", bgcolor: "rgba(148,163,184,0.06)" }}
+                  sx={{ borderRadius: "2px", bgcolor: "rgba(148,163,184,0.06)" }}
                 />
               </TableCell>
             ))}

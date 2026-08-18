@@ -7,13 +7,12 @@ import {
   Tooltip, Divider, Tab, Tabs,
 } from "@mui/material";
 import {
-  AssessmentOutlined, AttachMoney, ShoppingCart, TrendingUp,
-  Print, FileDownload, CreditCard, AccountBalance, ChevronLeft, ChevronRight,
-  Close, Receipt, MoneyOff, CalendarMonthOutlined, PrintOutlined, FileDownloadOutlined,
-} from "@mui/icons-material";
+  Banknote, ShoppingCart, TrendingUp, Printer, Download, CreditCard,
+  Landmark, ChevronLeft, ChevronRight, X, Receipt, Ban, CalendarDays,
+} from "lucide-react";
 import { CardSkeleton, TableSkeleton } from "./Skeletons";
 import CancelButton from "./CancelButton";
-import { mxToday, formatMXDate, formatMXTime, formatMXDateTime } from "../utils/dateUtils";
+import { mxToday, formatMXDate, formatMXTime, formatMXDateTime, getMXDateString } from "../utils/dateUtils";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip, ResponsiveContainer } from "recharts";
 import { jsPDF } from "jspdf";
 import { applyPlugin } from "jspdf-autotable";
@@ -65,12 +64,11 @@ const Reports = () => {
 
   useEffect(() => {
     const today = mxToday();
-    const firstDay = new Date();
-    firstDay.setDate(1);
-    const firstStr = new Date(firstDay.getFullYear(), firstDay.getMonth(), 1);
-    setStartDate(firstStr.toISOString().slice(0, 10));
+    const [y, m] = today.split("-");
+    const firstStr = `${y}-${m}-01`;
+    setStartDate(firstStr);
     setEndDate(today);
-    setExpenseStartDate(firstStr.toISOString().slice(0, 10));
+    setExpenseStartDate(firstStr);
     setExpenseEndDate(today);
   }, []);
 
@@ -136,6 +134,11 @@ const Reports = () => {
 
   const fmtMoney = (n) => `$${Number(n || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const pctOf = (cur, prev) => (prev === 0 ? (cur > 0 ? 100 : 0) : ((cur - prev) / prev) * 100);
+  const registerLabel = (e) => {
+    const n = e.register_name;
+    if (n && n !== "Cierre por cambio de turno" && !/^Cierre \d/.test(n)) return n;
+    return e.register_opener_name || (e.register_id ? `#${e.register_id}` : "Sin caja");
+  };
 
   const Delta = ({ value, invert }) => {
     const up = value >= 0;
@@ -151,12 +154,20 @@ const Reports = () => {
   const fetchCalendarMonth = useCallback(async (refDate) => {
     const year = refDate.getFullYear();
     const month = refDate.getMonth();
-    const monthStart = new Date(year, month, 1).toISOString().slice(0, 10);
-    const monthEnd = new Date(year, month + 1, 0).toISOString().slice(0, 10);
-    const monthEndPlus = new Date(year, month + 1, 1).toISOString().slice(0, 10);
-    const prev = new Date(year, month - 1, 1);
-    const prevStart = new Date(prev.getFullYear(), prev.getMonth(), 1).toISOString().slice(0, 10);
-    const prevEnd = new Date(prev.getFullYear(), prev.getMonth() + 1, 0).toISOString().slice(0, 10);
+    const mm = String(month + 1).padStart(2, "0");
+    const prevMonth = month === 0 ? 11 : month - 1;
+    const prevYear = month === 0 ? year - 1 : year;
+    const prevMm = String(prevMonth + 1).padStart(2, "0");
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const daysInPrevMonth = new Date(prevYear, prevMonth + 1, 0).getDate();
+    const monthStart = `${year}-${mm}-01`;
+    const monthEnd = `${year}-${mm}-${String(daysInMonth).padStart(2, "0")}`;
+    const nextMonth = month === 11 ? 0 : month + 1;
+    const nextYear = month === 11 ? year + 1 : year;
+    const nextMm = String(nextMonth + 1).padStart(2, "0");
+    const monthEndPlus = `${nextYear}-${nextMm}-01`;
+    const prevStart = `${prevYear}-${prevMm}-01`;
+    const prevEnd = `${prevYear}-${prevMm}-${String(daysInPrevMonth).padStart(2, "0")}`;
 
     setCalendarLoading(true);
     const [salesRes, expRes, prevSalesRes, prevExpRes] = await Promise.all([
@@ -182,7 +193,8 @@ const Reports = () => {
     let expensesCount = 0;
     if (expRes.success) {
       (expRes.expenses || []).forEach((e) => {
-        const dk = (e.created_at || "").slice(0, 10);
+        if (e.status === "cancelado") return;
+        const dk = getMXDateString(e.created_at);
         dailyExpenses[dk] = (dailyExpenses[dk] || 0) + (Number(e.amount) || 0);
         expensesTotal += Number(e.amount) || 0;
         expensesCount += 1;
@@ -229,7 +241,7 @@ const Reports = () => {
           key={d}
           onClick={() => handleDayClick(d)}
           sx={{
-            minHeight: 84, borderRadius: 2, p: 0.75, cursor: "pointer",
+            minHeight: 84, borderRadius: "12px", p: 0.75, cursor: "pointer",
             display: "flex", flexDirection: "column", alignItems: "stretch",
             border: "1px solid",
             borderColor: isSelected || isToday ? theme.palette.primary.main : "divider",
@@ -254,7 +266,7 @@ const Reports = () => {
           <Box sx={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: 0.35 }}>
             {sTotal > 0 && (
               <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, minWidth: 0 }}>
-                <Box sx={{ width: 13, height: 13, borderRadius: "4px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", bgcolor: theme.palette.success.main }}>
+                <Box sx={{ width: 13, height: 13, borderRadius: "2px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", bgcolor: theme.palette.success.main }}>
                   <Typography sx={{ fontSize: "0.55rem", color: "#fff", fontWeight: 800, lineHeight: 1 }}>S</Typography>
                 </Box>
                 <Typography sx={{ fontSize: "0.62rem", lineHeight: 1.2, fontWeight: 700, color: theme.palette.success.main, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -264,7 +276,7 @@ const Reports = () => {
             )}
             {eTotal > 0 && (
               <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, minWidth: 0 }}>
-                <Box sx={{ width: 13, height: 13, borderRadius: "4px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", bgcolor: theme.palette.error.main }}>
+                <Box sx={{ width: 13, height: 13, borderRadius: "2px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", bgcolor: theme.palette.error.main }}>
                   <Typography sx={{ fontSize: "0.55rem", color: "#fff", fontWeight: 800, lineHeight: 1 }}>E</Typography>
                 </Box>
                 <Typography sx={{ fontSize: "0.62rem", lineHeight: 1.2, fontWeight: 700, color: theme.palette.error.main, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -291,7 +303,7 @@ const Reports = () => {
     if (sales.length === 0) return;
     const header = "ID Venta,Fecha,Total,Método de Pago\n";
     const rows = sales.filter((s) => s.status !== "cancelado").map(s =>
-      `${s.id},"${new Date(s.created_at).toLocaleString()}",${s.total.toFixed(2)},${s.payment_method}`
+      `${s.id},"${formatMXDateTime(s.created_at)}",${s.total.toFixed(2)},${s.payment_method}`
     ).join("\n");
     const blob = new Blob(["\uFEFF" + header + rows], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -341,7 +353,7 @@ const Reports = () => {
       <table><tr><th>Método</th><th>Ventas</th><th>Total</th></tr>${byMethodHtml}</table>` : ""}
       <div class="section-title">Ventas del Período</div>
       <table><tr><th>#</th><th>Fecha</th><th>Método</th><th>Total</th></tr>
-      ${sales.filter((s) => s.status !== "cancelado").map(s => `<tr><td>#${s.id}</td><td>${new Date(s.created_at).toLocaleString("es-MX")}</td><td>${methodNames[s.payment_method] || s.payment_method}</td><td align="right">$${s.total.toFixed(2)}</td></tr>`).join("")}
+      ${sales.filter((s) => s.status !== "cancelado").map(s => `<tr><td>#${s.id}</td><td>${formatMXDateTime(s.created_at)}</td><td>${methodNames[s.payment_method] || s.payment_method}</td><td align="right">$${s.total.toFixed(2)}</td></tr>`).join("")}
       <tr class="total-row"><td colspan="3">TOTAL</td><td align="right">$${total.toFixed(2)}</td></tr>
       </table>
       <div class="footer">Generado el ${now.toLocaleString("es-MX")} — JRP POS</div>
@@ -477,29 +489,32 @@ const Reports = () => {
   const DAY_LABELS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
   const MONTH_NAMES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
+  const toDateStr = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
   const getWeekRange = (date) => {
     const d = new Date(date);
     const day = d.getDay();
     const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-    const monday = new Date(d.setDate(diff));
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
-    return { start: monday.toISOString().slice(0, 10), end: sunday.toISOString().slice(0, 10) };
+    const monday = new Date(d.getFullYear(), d.getMonth(), diff);
+    const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
+    return { start: toDateStr(monday), end: toDateStr(sunday) };
   };
 
   const fetchDailyWeek = useCallback(async (refDate) => {
     const { start, end } = getWeekRange(refDate);
-    const endPlus = new Date(end);
-    endPlus.setDate(endPlus.getDate() + 1);
-    const result = await window.api.invoke("get-daily-sales-week", { startDate: start, endDate: endPlus.toISOString().slice(0, 10) });
+    const [ey, em, ed] = end.split("-").map(Number);
+    const endPlusDate = new Date(ey, em - 1, ed + 1);
+    const endPlus = toDateStr(endPlusDate);
+    const result = await window.api.invoke("get-daily-sales-week", { startDate: start, endDate: endPlus });
     if (result.success) {
       const dayMap = {};
       (result.rows || []).forEach((r) => { dayMap[r.date] = r; });
-      const monday = new Date(start);
+      const [sy, sm, sd] = start.split("-").map(Number);
+      const monday = new Date(sy, sm - 1, sd);
       const formatted = DAY_LABELS.map((label, i) => {
-        const d = new Date(monday);
-        d.setDate(monday.getDate() + i);
-        const ds = d.toISOString().slice(0, 10);
+        const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
+        const ds = toDateStr(d);
         const row = dayMap[ds] || { total: 0, count: 0 };
         const isToday = ds === mxToday();
         return { day: label, date: ds, total: Number(row.total), ventas: Number(row.count), isToday };
@@ -511,9 +526,14 @@ const Reports = () => {
   const fetchMonthlyWeeks = useCallback(async (refDate) => {
     const year = refDate.getFullYear();
     const month = refDate.getMonth();
-    const monthStart = new Date(year, month, 1).toISOString().slice(0, 10);
-    const monthEnd = new Date(year, month + 1, 0).toISOString().slice(0, 10);
-    const monthEndPlus = new Date(year, month + 1, 1).toISOString().slice(0, 10);
+    const mm = String(month + 1).padStart(2, "0");
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const nextMonth = month === 11 ? 0 : month + 1;
+    const nextYear = month === 11 ? year + 1 : year;
+    const nextMm = String(nextMonth + 1).padStart(2, "0");
+    const monthStart = `${year}-${mm}-01`;
+    const monthEnd = `${year}-${mm}-${String(daysInMonth).padStart(2, "0")}`;
+    const monthEndPlus = `${nextYear}-${nextMm}-01`;
     const result = await window.api.invoke("get-weekly-sales-range", { startDate: monthStart, endDate: monthEndPlus });
     if (result.success) {
       const formatted = (result.rows || []).map((r) => ({
@@ -552,7 +572,7 @@ const Reports = () => {
     setChartRefDate(new Date(weekStart));
   };
 
-  const methodIcons = { cash: <AttachMoney />, card: <CreditCard />, transfer: <AccountBalance /> };
+  const methodIcons = { cash: <Banknote />, card: <CreditCard />, transfer: <Landmark /> };
   const methodLabels = { cash: "Efectivo", card: "Tarjeta", transfer: "Transferencia" };
   const methodColors = { cash: "#059669", card: "#4f46e5", transfer: "#d97706" };
 
@@ -561,7 +581,9 @@ const Reports = () => {
     const isCompra = e.reason.startsWith("Compra");
     return expenseFilter === "compra" ? isCompra : !isCompra;
   });
-  const filteredExpTotal = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
+  const filteredExpTotal = filteredExpenses
+    .filter((e) => e.status !== "cancelado")
+    .reduce((sum, e) => sum + e.amount, 0);
 
   return (
     <Box sx={{ p: 1, animation: "fadeIn 0.4s ease-out" }}>
@@ -584,13 +606,13 @@ const Reports = () => {
                 {MONTHS[calendarDate.getMonth()]} {calendarDate.getFullYear()}
               </Typography>
               <IconButton onClick={nextMonth} size="small"><ChevronRight /></IconButton>
-              <Button size="small" variant="outlined" onClick={goToday} sx={{ ml: 1, borderRadius: 2 }}>
+              <Button size="small" variant="outlined" onClick={goToday} sx={{ ml: 1, borderRadius: "12px" }}>
                 Hoy
               </Button>
             </Box>
             <IconButton size="small" onClick={() => { setCalendarOpen(false); setSelectedDay(null); }}
-              sx={{ border: "1px solid", borderColor: "divider", borderRadius: "8px", color: "text.secondary", "&:hover": { bgcolor: "action.hover" } }}>
-              <Close sx={{ fontSize: 18 }} />
+              sx={{ border: "1px solid", borderColor: "divider", borderRadius: "4px", color: "text.secondary", "&:hover": { bgcolor: "action.hover" } }}>
+              <X size={18} />
             </IconButton>
           </Box>
 
@@ -601,10 +623,10 @@ const Reports = () => {
               {/* Resumen mensual */}
               <Grid container spacing={2} sx={{ mb: 2 }}>
                 <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                  <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none", borderRadius: 2, height: "100%" }}>
+                  <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider",  borderRadius: "12px", height: "100%" }}>
                     <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, p: 2, "&:last-child": { pb: 2 } }}>
-                      <Box sx={{ width: 48, height: 48, borderRadius: "14px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(16,185,129,0.12)", flexShrink: 0 }}>
-                        <AttachMoney sx={{ fontSize: 24, color: theme.palette.success.main }} />
+                      <Box sx={{ width: 48, height: 48, borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(16,185,129,0.12)", flexShrink: 0 }}>
+                        <Banknote size={24} color={theme.palette.success.main} />
                       </Box>
                       <Box sx={{ minWidth: 0, flex: 1 }}>
                         <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.62rem" }}>Ventas del Mes</Typography>
@@ -618,10 +640,10 @@ const Reports = () => {
                   </Card>
                 </Grid>
                 <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                  <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none", borderRadius: 2, height: "100%" }}>
+                  <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider",  borderRadius: "12px", height: "100%" }}>
                     <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, p: 2, "&:last-child": { pb: 2 } }}>
-                      <Box sx={{ width: 48, height: 48, borderRadius: "14px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(239,68,68,0.12)", flexShrink: 0 }}>
-                        <MoneyOff sx={{ fontSize: 24, color: theme.palette.error.main }} />
+                      <Box sx={{ width: 48, height: 48, borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(239,68,68,0.12)", flexShrink: 0 }}>
+                        <Ban size={24} color={theme.palette.error.main} />
                       </Box>
                       <Box sx={{ minWidth: 0, flex: 1 }}>
                         <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.62rem" }}>Gastos del Mes</Typography>
@@ -635,10 +657,10 @@ const Reports = () => {
                   </Card>
                 </Grid>
                 <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                  <Card sx={{ bgcolor: theme.palette.primary.main, color: "#fff", borderRadius: 2, boxShadow: "0 8px 24px rgba(37,99,235,0.35)", height: "100%" }}>
+                  <Card sx={{ bgcolor: theme.palette.primary.main, color: "#fff", borderRadius: "12px", boxShadow: "0 8px 24px rgba(37,99,235,0.35)", height: "100%" }}>
                     <CardContent sx={{ display: "flex", alignItems: "center", gap: 2, p: 2, "&:last-child": { pb: 2 } }}>
-                      <Box sx={{ width: 48, height: 48, borderRadius: "14px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.16)", flexShrink: 0 }}>
-                        <TrendingUp sx={{ fontSize: 24 }} />
+                      <Box sx={{ width: 48, height: 48, borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.16)", flexShrink: 0 }}>
+                        <TrendingUp size={24} />
                       </Box>
                       <Box sx={{ minWidth: 0, flex: 1 }}>
                         <Typography variant="caption" sx={{ fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.62rem", opacity: 0.9 }}>Utilidad Neta</Typography>
@@ -653,13 +675,13 @@ const Reports = () => {
               {/* Leyenda */}
               <Box sx={{ display: "flex", alignItems: "center", gap: 2, mb: 1.5 }}>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-                  <Box sx={{ width: 13, height: 13, borderRadius: "4px", display: "flex", alignItems: "center", justifyContent: "center", bgcolor: theme.palette.success.main }}>
+                  <Box sx={{ width: 13, height: 13, borderRadius: "2px", display: "flex", alignItems: "center", justifyContent: "center", bgcolor: theme.palette.success.main }}>
                     <Typography sx={{ fontSize: "0.55rem", color: "#fff", fontWeight: 800, lineHeight: 1 }}>S</Typography>
                   </Box>
                   <Typography variant="caption" color="textSecondary">Ventas</Typography>
                 </Box>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-                  <Box sx={{ width: 13, height: 13, borderRadius: "4px", display: "flex", alignItems: "center", justifyContent: "center", bgcolor: theme.palette.error.main }}>
+                  <Box sx={{ width: 13, height: 13, borderRadius: "2px", display: "flex", alignItems: "center", justifyContent: "center", bgcolor: theme.palette.error.main }}>
                     <Typography sx={{ fontSize: "0.55rem", color: "#fff", fontWeight: 800, lineHeight: 1 }}>E</Typography>
                   </Box>
                   <Typography variant="caption" color="textSecondary">Gastos</Typography>
@@ -691,12 +713,12 @@ const Reports = () => {
                             </Typography>
                           </Box>
                           <IconButton size="small" onClick={() => setSelectedDay(null)}>
-                            <Close fontSize="small" />
+                            <X size={18} />
                           </IconButton>
                         </Box>
                         <Grid container spacing={1} sx={{ mt: 1 }}>
                           <Grid size={{ xs: 6 }}>
-                            <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none" }}>
+                            <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider",  }}>
                               <CardContent sx={{ py: 1.5, px: 1.5, "&:last-child": { pb: 1.5 } }}>
                                 <Typography variant="caption" sx={{ color: theme.palette.success.main, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.55rem" }}>Ingresos</Typography>
                                 <Typography variant="h6" sx={{ fontWeight: 700, fontSize: "0.95rem", lineHeight: 1.2 }}>
@@ -706,7 +728,7 @@ const Reports = () => {
                             </Card>
                           </Grid>
                           <Grid size={{ xs: 6 }}>
-                            <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none" }}>
+                            <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider",  }}>
                               <CardContent sx={{ py: 1.5, px: 1.5, "&:last-child": { pb: 1.5 } }}>
                                 <Typography variant="caption" sx={{ color: theme.palette.error.main, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.55rem" }}>Gastos</Typography>
                                 <Typography variant="h6" sx={{ fontWeight: 700, fontSize: "0.95rem", lineHeight: 1.2 }}>
@@ -727,12 +749,13 @@ const Reports = () => {
                               id: `sale-${s.id}`, type: "sale", saleId: s.id,
                               title: `Venta #${s.id}`,
                               desc: methodLabels[s.payment_method] || s.payment_method,
+                              status: s.status,
                               time: s.created_at, amount: s.total,
                             })),
                             ...(dayExpenses?.expenses || []).map(e => ({
                               id: `exp-${e.id}`, type: "expense", saleId: null,
                               title: e.reason.startsWith("Compra") ? "Compra de inventario" : "Retiro de efectivo",
-                              desc: e.reason,
+                              desc: e.reason, status: e.status,
                               time: e.created_at, amount: -e.amount,
                             })),
                           ].sort((a, b) => new Date(a.time) - new Date(b.time));
@@ -740,7 +763,7 @@ const Reports = () => {
                           if (items.length === 0) {
                             return (
                               <Box sx={{ display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", opacity: 0.5, py: 4, textAlign: "center" }}>
-                                <Receipt sx={{ fontSize: 36, color: "text.secondary", mb: 1 }} />
+                                <Receipt size={36} color={theme.palette.text.secondary} style={{ marginBottom: 4 }} />
                                 <Typography color="textSecondary" variant="body2">Sin movimientos en este día</Typography>
                               </Box>
                             );
@@ -750,20 +773,27 @@ const Reports = () => {
                               key={item.id}
                               onClick={() => item.type === "sale" && viewDetails(item.saleId)}
                               sx={{
-                                mb: 1, p: 1.25, borderLeft: `4px solid ${item.type === "sale" ? theme.palette.success.main : theme.palette.error.main}`,
+                                mb: 1, p: 1.25,
+                                borderLeft: `4px solid ${item.status === "cancelado" ? "rgba(148,163,184,0.6)" : (item.type === "sale" ? theme.palette.success.main : theme.palette.error.main)}`,
                                 cursor: item.type === "sale" ? "pointer" : "default",
+                                opacity: item.status === "cancelado" ? 0.65 : 1,
                                 transition: "all 0.15s",
                                 "&:hover": item.type === "sale" ? { bgcolor: isDark ? "rgba(59,130,246,0.14)" : "rgba(37,99,235,0.06)" } : {},
                               }}
                             >
                               <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 1 }}>
                                 <Box sx={{ minWidth: 0 }}>
-                                  <Typography variant="body2" sx={{ fontWeight: 600 }}>{item.title}</Typography>
+                                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                                    <Typography variant="body2" sx={{ fontWeight: 600, color: item.status === "cancelado" ? "text.secondary" : "text.primary", textDecoration: item.status === "cancelado" ? "line-through" : "none" }}>{item.title}</Typography>
+                                    {item.status === "cancelado" && (
+                                      <Chip label="Cancelado" size="small" sx={{ fontSize: "0.58rem", fontWeight: 700, height: 18, bgcolor: "rgba(239,68,68,0.14)", color: "error.main" }} />
+                                    )}
+                                  </Box>
                                   <Typography variant="caption" color="textSecondary" sx={{ display: "block" }}>
                                     {formatMXTime(item.time)} — {item.desc}
                                   </Typography>
                                 </Box>
-                                <Typography variant="body2" sx={{ fontWeight: 700, color: item.type === "sale" ? theme.palette.success.main : theme.palette.error.main, whiteSpace: "nowrap" }}>
+                                <Typography variant="body2" sx={{ fontWeight: 700, whiteSpace: "nowrap", color: item.status === "cancelado" ? "text.secondary" : (item.type === "sale" ? theme.palette.success.main : theme.palette.error.main), textDecoration: item.status === "cancelado" ? "line-through" : "none" }}>
                                   {item.type === "sale" ? "+" : "−"}{fmtMoney(Math.abs(item.amount))}
                                 </Typography>
                               </Box>
@@ -774,7 +804,7 @@ const Reports = () => {
                     </>
                   ) : (
                     <Box sx={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", gap: 1, opacity: 0.5, p: 3, textAlign: "center" }}>
-                      <CalendarMonthOutlined sx={{ fontSize: 44, color: "text.secondary" }} />
+                      <CalendarDays size={44} color={theme.palette.text.secondary} />
                       <Typography color="textSecondary" variant="body2">Selecciona un día en el calendario<br />para ver su detalle</Typography>
                     </Box>
                   )}
@@ -790,10 +820,10 @@ const Reports = () => {
             {/* Stats 2x2 */}
             <Grid container spacing={1.5} sx={{ mb: 2 }}>
               <Grid size={{ xs: 12, sm: 6 }}>
-                <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none", borderRadius: 2 }}>
+                <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider",  borderRadius: "12px" }}>
                   <CardContent sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 2, px: 2.5, "&:last-child": { pb: 2 } }}>
-                    <Box sx={{ width: 36, height: 36, borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(16, 185, 129, 0.12)", mb: 1 }}>
-                      <AttachMoney sx={{ fontSize: 17, color: theme.palette.success.main }} />
+                    <Box sx={{ width: 36, height: 36, borderRadius: "6px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(16, 185, 129, 0.12)", mb: 1 }}>
+                      <Banknote size={17} color={theme.palette.success.main} />
                     </Box>
                     <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.55rem" }}>Ventas Totales</Typography>
                     <Typography variant="h5" sx={{ fontWeight: 700, color: "text.primary", fontSize: "1.35rem", lineHeight: 1.2, mt: 0.5 }}>${total.toFixed(2)}</Typography>
@@ -801,10 +831,10 @@ const Reports = () => {
                 </Card>
               </Grid>
               <Grid size={{ xs: 12, sm: 6 }}>
-                <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none", borderRadius: 2 }}>
+                <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider",  borderRadius: "12px" }}>
                   <CardContent sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 2, px: 2.5, "&:last-child": { pb: 2 } }}>
-                    <Box sx={{ width: 36, height: 36, borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(59, 130, 246, 0.12)", mb: 1 }}>
-                      <ShoppingCart sx={{ fontSize: 17, color: theme.palette.primary.main }} />
+                    <Box sx={{ width: 36, height: 36, borderRadius: "6px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(59, 130, 246, 0.12)", mb: 1 }}>
+                      <ShoppingCart size={17} color={theme.palette.primary.main} />
                     </Box>
                     <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.55rem" }}>Transacciones</Typography>
                     <Typography variant="h5" sx={{ fontWeight: 700, color: "text.primary", fontSize: "1.35rem", lineHeight: 1.2, mt: 0.5 }}>{count}</Typography>
@@ -812,10 +842,10 @@ const Reports = () => {
                 </Card>
               </Grid>
               <Grid size={{ xs: 12, sm: 6 }}>
-                <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none", borderRadius: 2 }}>
+                <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider",  borderRadius: "12px" }}>
                   <CardContent sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 2, px: 2.5, "&:last-child": { pb: 2 } }}>
-                    <Box sx={{ width: 36, height: 36, borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(245, 158, 11, 0.12)", mb: 1 }}>
-                      <TrendingUp sx={{ fontSize: 17, color: theme.palette.warning.main }} />
+                    <Box sx={{ width: 36, height: 36, borderRadius: "6px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(245, 158, 11, 0.12)", mb: 1 }}>
+                      <TrendingUp size={17} color={theme.palette.warning.main} />
                     </Box>
                     <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.55rem" }}>Ticket Promedio</Typography>
                     <Typography variant="h5" sx={{ fontWeight: 700, color: "text.primary", fontSize: "1.35rem", lineHeight: 1.2, mt: 0.5 }}>${avg.toFixed(2)}</Typography>
@@ -823,10 +853,10 @@ const Reports = () => {
                 </Card>
               </Grid>
               <Grid size={{ xs: 12, sm: 6 }}>
-                <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider", boxShadow: "none", borderRadius: 2 }}>
+                <Card sx={{ bgcolor: "background.paper", border: "1px solid", borderColor: "divider",  borderRadius: "12px" }}>
                   <CardContent sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 2, px: 2.5, "&:last-child": { pb: 2 } }}>
-                    <Box sx={{ width: 36, height: 36, borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(239, 68, 68, 0.12)", mb: 1 }}>
-                      <MoneyOff sx={{ fontSize: 17, color: theme.palette.error.main }} />
+                    <Box sx={{ width: 36, height: 36, borderRadius: "6px", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(239, 68, 68, 0.12)", mb: 1 }}>
+                      <Ban size={17} color={theme.palette.error.main} />
                     </Box>
                     <Typography variant="caption" sx={{ color: "textSecondary", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", fontSize: "0.55rem" }}>Gastos / Egresos</Typography>
                     <Typography variant="h5" sx={{ fontWeight: 700, color: "text.primary", fontSize: "1.35rem", lineHeight: 1.2, mt: 0.5 }}>${totalExpenses.toFixed(2)}</Typography>
@@ -895,7 +925,7 @@ const Reports = () => {
             </Box>
 
             {/* Filtros */}
-            <Card variant="outlined" sx={{ borderRadius: 2, mb: 2, boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
+            <Card variant="outlined" sx={{ borderRadius: "12px", mb: 2, boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
               {tabIndex === 0 ? (
                 <Box sx={{ p: 2.5 }}>
                   <Grid container spacing={2} alignItems="flex-end">
@@ -970,7 +1000,7 @@ const Reports = () => {
             </Card>
 
             {/* Tabla */}
-            <Card variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
+            <Card variant="outlined" sx={{ borderRadius: "12px", overflow: "hidden" }}>
               <Box sx={{ position: "relative", borderBottom: 1, borderColor: "divider" }}>
                 <Tabs value={tabIndex} onChange={(e, v) => setTabIndex(v)} centered
                   sx={{ minHeight: 0, "& .MuiTabs-indicator": { height: 3, bgcolor: "#1e3a8a" }, "& .MuiTab-root": { textTransform: "none", fontWeight: 700, py: 2.5, minHeight: 0, fontSize: "0.95rem", color: "text.secondary" }, "& .Mui-selected": { color: "#1e3a8a" } }}>
@@ -980,23 +1010,23 @@ const Reports = () => {
                 <Stack direction="row" spacing={1} sx={{ position: "absolute", top: "50%", right: 16, transform: "translateY(-50%)" }}>
                   <Tooltip title="Calendario">
                     <IconButton size="small"
-                      sx={{ p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: "8px", color: "#1e3a8a", bgcolor: calendarOpen ? "rgba(30,58,138,0.1)" : "transparent", "&:hover": { bgcolor: "#eff6ff" } }}
+                      sx={{ p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: "4px", color: "#1e3a8a", bgcolor: calendarOpen ? "rgba(30,58,138,0.1)" : "transparent", "&:hover": { bgcolor: "#eff6ff" } }}
                       onClick={() => { setCalendarOpen(!calendarOpen); if (calendarOpen) setSelectedDay(null); }}>
-                      <CalendarMonthOutlined sx={{ fontSize: 20 }} />
+                      <CalendarDays size={20} />
                     </IconButton>
                   </Tooltip>
                   <Tooltip title="Imprimir reporte">
                     <IconButton size="small"
-                      sx={{ p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: "8px", color: "#1e3a8a", "&:hover": { bgcolor: "#eff6ff" } }}
+                      sx={{ p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: "4px", color: "#1e3a8a", "&:hover": { bgcolor: "#eff6ff" } }}
                       onClick={printReport}>
-                      <PrintOutlined sx={{ fontSize: 20 }} />
+                      <Printer size={20} />
                     </IconButton>
                   </Tooltip>
                   <Tooltip title="Exportar PDF">
                     <IconButton size="small"
-                      sx={{ p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: "8px", color: "#1e3a8a", "&:hover": { bgcolor: "#eff6ff" } }}
+                      sx={{ p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: "4px", color: "#1e3a8a", "&:hover": { bgcolor: "#eff6ff" } }}
                       onClick={exportPDF}>
-                      <FileDownloadOutlined sx={{ fontSize: 20 }} />
+                      <Download size={20} />
                     </IconButton>
                   </Tooltip>
                 </Stack>
@@ -1044,13 +1074,13 @@ const Reports = () => {
                                   <TableCell sx={{ py: 1.5 }}>
                                     <Tooltip title={methodLabels[s.payment_method] || s.payment_method}>
                                       <Box sx={{
-                                        width: 32, height: 32, borderRadius: "8px",
+                                        width: 32, height: 32, borderRadius: "4px",
                                         display: "flex", alignItems: "center", justifyContent: "center",
                                         bgcolor: `${methodColors[s.payment_method] || "#64748b"}1f`,
                                       }}>
                                         {(() => {
-                                          const Icon = { cash: AttachMoney, card: CreditCard, transfer: AccountBalance }[s.payment_method] || AttachMoney;
-                                          return <Icon sx={{ fontSize: 16, color: methodColors[s.payment_method] || "#64748b" }} />;
+                                          const Icon = { cash: Banknote, card: CreditCard, transfer: Landmark }[s.payment_method] || Banknote;
+                                          return <Icon size={16} color={methodColors[s.payment_method] || "#64748b"} />;
                                         })()}
                                       </Box>
                                     </Tooltip>
@@ -1108,17 +1138,25 @@ const Reports = () => {
                                         <Typography variant="body2" sx={{ fontWeight: 600, fontSize: "0.8rem" }}>{formatMXDate(e.created_at)}</Typography>
                                         <Typography variant="caption" color="textSecondary" sx={{ fontSize: "0.7rem" }}>{formatMXTime(e.created_at)}</Typography>
                                       </TableCell>
-                                      <TableCell sx={{ py: 1.5, fontSize: "0.8rem" }}>{e.reason}</TableCell>
+                                      <TableCell sx={{ py: 1.5, fontSize: "0.8rem", color: e.status === "cancelado" ? "text.secondary" : "text.primary", textDecoration: e.status === "cancelado" ? "line-through" : "none" }}>{e.reason}</TableCell>
                                       <TableCell sx={{ py: 1.5 }}>
-                                        <Box sx={{ display: "inline-flex", alignItems: "center", gap: 0.5, px: 0.8, py: 0.3, borderRadius: "4px", bgcolor: "rgba(239, 68, 68, 0.08)", border: "1px solid rgba(239, 68, 68, 0.2)" }}>
-                                          <Typography variant="caption" sx={{ fontSize: "0.65rem", fontWeight: 700, textTransform: "uppercase", color: "error.main" }}>
-                                            {e.reason.startsWith("Compra") ? "Compra" : "Retiro"}
-                                          </Typography>
-                                        </Box>
+                                        {e.status === "cancelado" ? (
+                                          <Box sx={{ display: "inline-flex", alignItems: "center", gap: 0.5, px: 0.8, py: 0.3, borderRadius: "2px", bgcolor: "rgba(239, 68, 68, 0.12)", border: "1px solid rgba(239, 68, 68, 0.35)" }}>
+                                            <Typography variant="caption" sx={{ fontSize: "0.65rem", fontWeight: 700, textTransform: "uppercase", color: "error.main" }}>
+                                              Cancelado
+                                            </Typography>
+                                          </Box>
+                                        ) : (
+                                          <Box sx={{ display: "inline-flex", alignItems: "center", gap: 0.5, px: 0.8, py: 0.3, borderRadius: "2px", bgcolor: "rgba(239, 68, 68, 0.08)", border: "1px solid rgba(239, 68, 68, 0.2)" }}>
+                                            <Typography variant="caption" sx={{ fontSize: "0.65rem", fontWeight: 700, textTransform: "uppercase", color: "error.main" }}>
+                                              {e.reason.startsWith("Compra") ? "Compra" : "Retiro"}
+                                            </Typography>
+                                          </Box>
+                                        )}
                                       </TableCell>
-                                      <TableCell sx={{ py: 1.5, fontSize: "0.8rem" }}>{e.register_name || (e.register_id ? `#${e.register_id}` : "Sin caja")}</TableCell>
+                                      <TableCell sx={{ py: 1.5, fontSize: "0.8rem" }}>{registerLabel(e)}</TableCell>
                                       <TableCell align="right" sx={{ py: 1.5 }}>
-                                        <Typography variant="body2" sx={{ fontWeight: 700, fontSize: "0.85rem", color: "error.main" }}>-${Number(e.amount).toFixed(2)}</Typography>
+                                        <Typography variant="body2" sx={{ fontWeight: 700, fontSize: "0.85rem", color: e.status === "cancelado" ? "text.secondary" : "error.main", textDecoration: e.status === "cancelado" ? "line-through" : "none" }}>-${Number(e.amount).toFixed(2)}</Typography>
                                       </TableCell>
                                     </TableRow>
                                   ))}
@@ -1131,7 +1169,7 @@ const Reports = () => {
                           </TableContainer>
                         ) : (
                           <Box sx={{ textAlign: "center", py: 6 }}>
-                            <MoneyOff sx={{ fontSize: 40, color: "text.secondary", mb: 1, opacity: 0.4 }} />
+                            <Ban size={40} color={theme.palette.text.secondary} style={{ marginBottom: 4, opacity: 0.4 }} />
                             <Typography color="textSecondary" sx={{ fontSize: "0.85rem" }}>No hay gastos en este período</Typography>
                           </Box>
                         )}

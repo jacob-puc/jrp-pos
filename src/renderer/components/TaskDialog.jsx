@@ -50,7 +50,7 @@ const TaskDialog = ({ open, onClose, onTasksChange }) => {
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth
-      PaperProps={{ sx: { borderRadius: "16px" } }}>
+      PaperProps={{ sx: { borderRadius: "12px" } }}>
       <DialogTitle sx={{ fontWeight: 700 }}>
         <Stack direction="row" spacing={1.5} alignItems="center">
           <CalendarMonth sx={{ color: "#3b82f6" }} />
@@ -68,7 +68,7 @@ const TaskDialog = ({ open, onClose, onTasksChange }) => {
                   if (newValue) { setTaskDate(newValue); loadTasksForDate(newValue); }
                 }}
                 slotProps={{ actionBar: { actions: [] }, toolbar: { hidden: true } }}
-                sx={{ "& .MuiPickersDay-root": { borderRadius: "8px" } }}
+                sx={{ "& .MuiPickersDay-root": { borderRadius: "4px" } }}
               />
             </Box>
             <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -96,11 +96,11 @@ const TaskDialog = ({ open, onClose, onTasksChange }) => {
               <Stack direction="row" spacing={1} alignItems="center">
                 <TextField size="small" placeholder="Título" value={newTaskTitle} onChange={(e) => setNewTaskTitle(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") handleAddTask(); }}
-                  sx={{ flex: 1, "& .MuiOutlinedInput-root": { borderRadius: "8px" } }} />
+                  sx={{ flex: 1, "& .MuiOutlinedInput-root": { borderRadius: "4px" } }} />
                 <TextField size="small" type="time" value={newTaskTime} onChange={(e) => setNewTaskTime(e.target.value)}
                   InputLabelProps={{ shrink: true }}
-                  sx={{ width: 100, "& .MuiOutlinedInput-root": { borderRadius: "8px" } }} />
-                <IconButton size="small" onClick={handleAddTask} sx={{ bgcolor: "#3b82f6", color: "white", "&:hover": { bgcolor: "#2563eb" }, borderRadius: "8px" }}>
+                  sx={{ width: 100, "& .MuiOutlinedInput-root": { borderRadius: "4px" } }} />
+                <IconButton size="small" onClick={handleAddTask} sx={{ bgcolor: "#3b82f6", color: "white", "&:hover": { bgcolor: "#2563eb" }, borderRadius: "4px" }}>
                   <Add sx={{ fontSize: 18 }} />
                 </IconButton>
               </Stack>

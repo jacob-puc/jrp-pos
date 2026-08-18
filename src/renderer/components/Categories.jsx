@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from "react";
 import {
   Box, Typography, Card, Grid, Button, IconButton, Dialog, DialogTitle,
-  DialogContent, DialogActions, TextField, Stack, Alert,
+  DialogContent, DialogActions, TextField, Stack, Alert, useTheme,
+  InputAdornment,
 } from "@mui/material";
-import {
-  Add, EditOutlined, DeleteOutlined, Category, CheckCircle,
-} from "@mui/icons-material";
+import { Plus, Pencil, Trash2, Shapes, CheckCircle2 } from "lucide-react";
 import CancelButton from "./CancelButton";
+import { useToast } from "./ToastProvider";
 
 const catColors = [
   { bg: "rgba(59,130,246,0.12)", icon: "#3b82f6", glow: "rgba(59,130,246,0.1)" },
@@ -25,6 +25,9 @@ const Categories = () => {
   const [form, setForm] = useState({ name: "", description: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const theme = useTheme();
+  const isDark = theme.palette.mode === "dark";
+  const notify = useToast();
 
   const load = async () => {
     setLoading(true);
@@ -67,7 +70,7 @@ const Categories = () => {
         setDeleteConfirm(null);
         load();
       } else {
-        alert(result.error);
+        notify(result.error, "error");
         setDeleteConfirm(null);
       }
     } catch {}
@@ -82,8 +85,8 @@ const Categories = () => {
             Gestiona las categorías de productos
           </Typography>
         </Box>
-        <Button variant="contained" startIcon={<Add />} onClick={() => handleOpen()}
-          sx={{ borderRadius: "10px", fontWeight: 600 }}>
+        <Button variant="contained" startIcon={<Plus size={18} />} onClick={() => handleOpen()}
+          sx={{ borderRadius: "6px", fontWeight: 600, px: 2, py: 0.8 }}>
           Nueva Categoría
         </Button>
       </Stack>
@@ -92,13 +95,13 @@ const Categories = () => {
         <Grid container spacing={2.5}>
           {[0, 1, 2, 3].map((i) => (
             <Grid item xs={12} sm={6} lg={4} xl={3} key={i}>
-              <Card sx={{ borderRadius: "12px", border: "1px solid", borderColor: "divider", boxShadow: "none", height: 230 }} />
+              <Card sx={{ borderRadius: "8px", border: "1px solid", borderColor: "divider",  height: 230 }} />
             </Grid>
           ))}
         </Grid>
       ) : categories.length === 0 ? (
         <Box sx={{ width: "100%", py: 10, textAlign: "center", color: "#94a3b8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-          <Category sx={{ fontSize: 48, mb: 1.5, opacity: 0.3 }} />
+          <Shapes size={48} style={{ opacity: 0.3, marginBottom: 12 }} />
           <Typography>No hay categorías registradas</Typography>
         </Box>
       ) : (
@@ -108,10 +111,10 @@ const Categories = () => {
             return (
               <Grid item xs={12} sm={6} lg={4} xl={3} key={c.id}>
                 <Card sx={{
-                  borderRadius: "12px",
+                  borderRadius: "8px",
                   border: "1px solid",
                   borderColor: "divider",
-                  boxShadow: "none",
+                  
                   position: "relative",
                   overflow: "hidden",
                   height: "100%",
@@ -128,11 +131,11 @@ const Categories = () => {
                   }} />
                   <Box sx={{ p: 3 }}>
                     <Box sx={{
-                      width: 52, height: 52, borderRadius: "14px",
+                      width: 52, height: 52, borderRadius: "10px",
                       bgcolor: col.bg, display: "flex", alignItems: "center",
                       justifyContent: "center", mb: 2,
                     }}>
-                      <Category sx={{ fontSize: 26, color: col.icon }} />
+                      <Shapes size={26} color={col.icon} />
                     </Box>
                     <Typography sx={{ fontWeight: 700, fontSize: "1.05rem", mb: 0.5 }}>{c.name}</Typography>
                     <Typography sx={{ color: "#64748b", fontSize: "0.85rem", mb: 2, minHeight: 40 }}>
@@ -149,11 +152,11 @@ const Categories = () => {
                       </Typography>
                       <Stack direction="row" spacing={0.5} alignItems="center">
                         <IconButton size="small" onClick={() => handleOpen(c)}
-                          sx={{ color: "#1e3a8a", p: 1, "&:hover": { bgcolor: "#f5f5f4" } }}>
-                          <EditOutlined sx={{ fontSize: 18 }} />
+                          sx={{ p: 1, color: isDark ? "#e2e8f0" : "#1e3a8a", "&:hover": { bgcolor: isDark ? "rgba(255,255,255,0.08)" : "#f5f5f4" } }}>
+                          <Pencil size={18} />
                         </IconButton>
                         <IconButton size="small" color="error" onClick={() => setDeleteConfirm(c)} sx={{ p: 1 }}>
-                          <DeleteOutlined sx={{ fontSize: 18 }} />
+                          <Trash2 size={18} />
                         </IconButton>
                       </Stack>
                     </Stack>
@@ -167,31 +170,40 @@ const Categories = () => {
 
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="xs" fullWidth
         onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) handleSave(); }}
-        PaperProps={{ sx: { borderRadius: "16px" } }}>
+        PaperProps={{ sx: { borderRadius: "6px" } }}>
         <DialogTitle sx={{ fontWeight: 700 }}>
           {editing ? "Editar Categoría" : "Nueva Categoría"}
         </DialogTitle>
         <DialogContent>
           {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-          <TextField fullWidth label="Nombre" value={form.name}
+          <Typography variant="caption" sx={{ fontWeight: 500, display: "block", mb: 0.5, color: "text.secondary", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            Nombre
+          </Typography>
+          <TextField fullWidth placeholder="Ej: Bebidas" value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
-            sx={{ mb: 2, mt: 1 }} autoFocus
-            slotProps={{ input: { startAdornment: <Category sx={{ mr: 1, fontSize: 20, color: "#234e8c" }} /> } }} />
-          <TextField fullWidth label="Descripción (opcional)" value={form.description}
+            autoFocus
+            slotProps={{ input: { startAdornment: <InputAdornment position="start" sx={{ display: "flex", alignItems: "center" }}><Shapes size={20} color="#234e8c" style={{ display: "block" }} /></InputAdornment> } }}
+            sx={{ mb: 2, "& .MuiOutlinedInput-root.MuiOutlinedInput-root": { borderRadius: "6px", "& fieldset": { borderRadius: "6px" } }, "& .MuiInputBase-input::placeholder": { fontSize: "0.85rem" } }} />
+          <Typography variant="caption" sx={{ fontWeight: 500, display: "block", mb: 0.5, color: "text.secondary", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            Descripción (opcional)
+          </Typography>
+          <TextField fullWidth placeholder="Describa la categoría" value={form.description}
             onChange={(e) => setForm({ ...form, description: e.target.value })}
-            multiline rows={2} />
+            multiline rows={2}
+            sx={{ "& .MuiOutlinedInput-root.MuiOutlinedInput-root": { borderRadius: "6px", "& fieldset": { borderRadius: "6px" } }, "& .MuiInputBase-input::placeholder": { fontSize: "0.85rem" } }} />
         </DialogContent>
         <DialogActions sx={{ p: 2.5 }}>
           <CancelButton onClick={() => setDialogOpen(false)}>Cancelar</CancelButton>
           <Button onClick={handleSave} variant="contained"
-            startIcon={editing ? <CheckCircle /> : <Add />}>
+            sx={{ backgroundColor: "#234e8c", "&:hover": { backgroundColor: "#1a3b6e" } }}
+            startIcon={editing ? <CheckCircle2 size={18} /> : <Plus size={18} />}>
             {editing ? "Guardar" : "Agregar"}
           </Button>
         </DialogActions>
       </Dialog>
 
       <Dialog open={!!deleteConfirm} onClose={() => setDeleteConfirm(null)} maxWidth="xs" fullWidth
-        PaperProps={{ sx: { borderRadius: "16px" } }}>
+        PaperProps={{ sx: { borderRadius: "12px" } }}>
         <DialogTitle sx={{ fontWeight: 700 }}>Eliminar Categoría</DialogTitle>
         <DialogContent>
           <Typography>¿Eliminar <strong>{deleteConfirm?.name}</strong>?</Typography>

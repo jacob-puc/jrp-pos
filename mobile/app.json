@@ -7,7 +7,7 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "backgroundColor": "#1e3a5f"
+      "backgroundColor": "#2563eb"
     },
     "ios": {
       "infoPlist": {
@@ -19,9 +19,10 @@
     "android": {
       "package": "com.tienda.posmovil",
       "adaptiveIcon": {
-        "backgroundColor": "#1e3a5f",
+        "backgroundColor": "#2563eb",
         "foregroundImage": "./assets/android-icon-foreground.png"
       },
+      "softwareKeyboardLayoutMode": "resize",
       "permissions": [
         "android.permission.CAMERA"
       ]
@@ -41,7 +42,8 @@
             "usesCleartextTraffic": true
           }
         }
-      ]
+      ],
+      "expo-font"
     ]
   }
 }

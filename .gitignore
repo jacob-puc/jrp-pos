@@ -102,3 +102,9 @@ mobile/.expo/
 /*.ps1
 /test-*
 /GHIA-GTP582/
+
+# Base de datos local de desarrollo
+/src/db/*.db
+/src/db/*.db-journal
+/src/db/*.db-wal
+/src/db/*.db-shm

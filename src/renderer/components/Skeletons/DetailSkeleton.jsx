@@ -12,10 +12,10 @@ const DetailSkeleton = () => (
             <Skeleton variant="text" width="60%" height={18} sx={{ bgcolor: "rgba(148,163,184,0.06)" }} />
           </Box>
         </Box>
-        <Skeleton variant="rectangular" width="100%" height={180} sx={{ borderRadius: "12px", bgcolor: "rgba(148,163,184,0.06)" }} />
+        <Skeleton variant="rectangular" width="100%" height={180} sx={{ borderRadius: "8px", bgcolor: "rgba(148,163,184,0.06)" }} />
         <Stack spacing={1.5}>
           {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} variant="rectangular" width="100%" height={48} sx={{ borderRadius: "8px", bgcolor: "rgba(148,163,184,0.06)" }} />
+            <Skeleton key={i} variant="rectangular" width="100%" height={48} sx={{ borderRadius: "4px", bgcolor: "rgba(148,163,184,0.06)" }} />
           ))}
         </Stack>
       </Stack>

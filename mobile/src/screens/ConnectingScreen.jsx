@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { View, StyleSheet } from "react-native";
-import { Text, ActivityIndicator, useTheme, Button } from "react-native-paper";
+import { Text, ActivityIndicator, useTheme } from "react-native-paper";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { initialize } from "../services/api";
+import RaisedButton from "../components/RaisedButton";
 
 const ConnectingScreen = ({ onConnected }) => {
   const theme = useTheme();
+  const insets = useSafeAreaInsets();
   const [status, setStatus] = useState("Buscando servidor...");
   const [failed, setFailed] = useState(false);
 
@@ -28,14 +31,14 @@ const ConnectingScreen = ({ onConnected }) => {
   useEffect(() => { connect(); }, []);
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+    <View style={[styles.container, { backgroundColor: theme.colors.background, paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}>
       {!failed ? (
         <>
           <ActivityIndicator size="large" color={theme.colors.primary} />
           <Text variant="titleMedium" style={{ marginTop: 24, color: theme.colors.onSurface, fontWeight: "600" }}>
             {status}
           </Text>
-          <Text style={{ marginTop: 8, color: theme.colors.onSurfaceVariant, textAlign: "center" }}>
+          <Text style={{ marginTop: 8, color: theme.colors.onSurfaceVariant, textAlign: "center", lineHeight: 22 }}>
             Conectando al sistema de ventas{"\n"}vía WiFi local
           </Text>
         </>
@@ -44,12 +47,12 @@ const ConnectingScreen = ({ onConnected }) => {
           <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: "600", marginBottom: 8 }}>
             {status}
           </Text>
-          <Text style={{ color: theme.colors.onSurfaceVariant, textAlign: "center", marginBottom: 24 }}>
+          <Text style={{ color: theme.colors.onSurfaceVariant, textAlign: "center", lineHeight: 22, marginBottom: 24 }}>
             Asegúrate de estar en la misma red WiFi{"\n"}y que el sistema de ventas esté abierto
           </Text>
-          <Button mode="contained" onPress={connect} buttonColor={theme.colors.primary}>
+          <RaisedButton onPress={connect} style={{ borderRadius: 12 }}>
             Reintentar
-          </Button>
+          </RaisedButton>
         </>
       )}
     </View>

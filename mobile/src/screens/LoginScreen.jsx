@@ -1,15 +1,21 @@
-import React, { useState, useEffect } from "react";
-import { View, FlatList, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
-import { Text, TextInput, Button, ActivityIndicator, useTheme, Avatar } from "react-native-paper";
+import React, { useState, useEffect, useMemo } from "react";
+import { View, ScrollView, TouchableOpacity, StyleSheet, Dimensions, KeyboardAvoidingView, Platform } from "react-native";
+import { Text, Button, ActivityIndicator, useTheme, Avatar } from "react-native-paper";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { authenticate, getCashiers } from "../services/api";
+import FormInput from "../components/FormInput";
+import PressableCard from "../components/PressableCard";
+import RaisedButton from "../components/RaisedButton";
 
-const { width } = Dimensions.get("window");
+const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
-const COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
-const CARD_SIZE = Math.min((width - 64) / 3, 110);
+const COLORS = ["#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6"];
+const GAP = 12;
+const MAX_COLUMNS = 3;
 
 const LoginScreen = ({ onLogin }) => {
   const theme = useTheme();
+  const insets = useSafeAreaInsets();
   const [cashiers, setCashiers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState(null);
@@ -28,8 +34,24 @@ const LoginScreen = ({ onLogin }) => {
     })();
   }, []);
 
-  const handleSelect = (id) => {
-    setSelectedId(id);
+  const columns = Math.min(MAX_COLUMNS, Math.max(1, cashiers.length));
+  const cardWidth = Math.min(380, SCREEN_WIDTH - 48);
+  const innerWidth = cardWidth - 48;
+  const itemSize = Math.max(92, Math.min(148, (innerWidth - GAP * (columns - 1)) / columns));
+  const avatarSize = itemSize > 124 ? 56 : itemSize > 96 ? 48 : 40;
+
+  const rows = useMemo(() => {
+    const out = [];
+    for (let i = 0; i < cashiers.length; i += columns) out.push(cashiers.slice(i, i + columns));
+    return out;
+  }, [cashiers, columns]);
+
+  const handleSelect = (item) => {
+    if (item.is_active === 0) {
+      setError("Este usuario está inactivo");
+      return;
+    }
+    setSelectedId(item.id);
     setPin("");
     setError("");
   };
@@ -55,124 +77,181 @@ const LoginScreen = ({ onLogin }) => {
 
   const selected = cashiers.find((c) => c.id === selectedId);
 
+  const renderAvatarCard = (item, index) => {
+    const initial = item.name.charAt(0).toUpperCase();
+    const bgColor = COLORS[index % COLORS.length];
+    const isActive = item.is_active !== 0;
+    return (
+      <PressableCard
+        key={String(item.id)}
+        onPress={() => handleSelect(item)}
+        disabled={!isActive}
+        style={[
+          styles.avatarCard,
+          {
+            width: itemSize,
+            height: itemSize,
+            backgroundColor: theme.colors.surfaceVariant,
+            borderColor: isActive ? theme.colors.outlineVariant : theme.colors.error,
+            shadowColor: isActive ? bgColor : theme.colors.error,
+          },
+          !isActive && styles.inactiveCard,
+        ]}
+        pressedStyle={styles.avatarCardPressed}
+      >
+        <Avatar.Text
+          size={avatarSize}
+          label={initial}
+          color="#ffffff"
+          style={{ backgroundColor: isActive ? bgColor : theme.colors.surfaceDisabled, alignSelf: "center" }}
+        />
+        <Text
+          variant="labelSmall"
+          numberOfLines={1}
+          style={{ textAlign: "center", marginTop: 6, fontWeight: "600", color: isActive ? theme.colors.onSurface : theme.colors.onSurfaceVariant, width: itemSize - 16 }}
+        >
+          {item.name}
+        </Text>
+        <View style={[styles.badge, { backgroundColor: isActive ? "#dcfce7" : "#fee2e2", borderColor: isActive ? "#22c55e" : "#ef4444" }]}>
+          <View style={[styles.badgeDot, { backgroundColor: isActive ? "#16a34a" : "#dc2626" }]} />
+          <Text style={[styles.badgeText, { color: isActive ? "#15803d" : "#b91c1c" }]}>
+            {isActive ? "Activo" : "Inactivo"}
+          </Text>
+        </View>
+      </PressableCard>
+    );
+  };
+
   return (
-    <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <View style={styles.card}>
-        <Text variant="headlineSmall" style={{ fontWeight: "800", color: theme.colors.onSurface, textAlign: "center" }}>
-          POS Móvil
-        </Text>
-        <Text style={{ color: theme.colors.onSurfaceVariant, textAlign: "center", marginTop: 4, marginBottom: 24 }}>
-          {selectedId ? "Ingresa tu PIN para acceder" : "Selecciona un usuario"}
-        </Text>
+    <KeyboardAvoidingView
+      style={[styles.container, { backgroundColor: theme.colors.background }]}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 }]}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.outlineVariant }]}>
+          <View style={[styles.accent, { backgroundColor: theme.colors.primary }]} />
+          <Text variant="headlineSmall" style={{ fontWeight: "800", color: theme.colors.onSurface, textAlign: "center" }}>
+            POS Móvil
+          </Text>
+          <Text style={{ color: theme.colors.onSurfaceVariant, textAlign: "center", marginTop: 4, marginBottom: 20 }}>
+            {selectedId ? "Ingresa tu PIN para acceder" : "Selecciona un usuario"}
+          </Text>
 
-        {!selectedId ? (
-          loading ? (
-            <ActivityIndicator size="large" style={{ padding: 40 }} />
+          {!selectedId ? (
+            loading ? (
+              <ActivityIndicator size="large" style={{ paddingVertical: 40 }} color={theme.colors.primary} />
+            ) : rows.length === 0 ? (
+              <Text style={{ color: theme.colors.onSurfaceVariant, textAlign: "center", paddingVertical: 32 }}>
+                No hay usuarios registrados
+              </Text>
+            ) : (
+              <ScrollView
+                style={{ maxHeight: 340 }}
+                contentContainerStyle={styles.grid}
+                showsVerticalScrollIndicator={false}
+                nestedScrollEnabled
+              >
+                {rows.map((row, ri) => (
+                  <View key={ri} style={styles.gridRow}>
+                    {row.map((item, idx) => renderAvatarCard(item, ri * columns + idx))}
+                  </View>
+                ))}
+              </ScrollView>
+            )
           ) : (
-            <FlatList
-              data={cashiers}
-              keyExtractor={(item) => String(item.id)}
-              numColumns={3}
-              scrollEnabled={false}
-              columnWrapperStyle={{ justifyContent: "center", gap: 12 }}
-              contentContainerStyle={{ gap: 12 }}
-              renderItem={({ item, index }) => {
-                const initial = item.name.charAt(0).toUpperCase();
-                const bgColor = COLORS[index % COLORS.length];
-                return (
-                  <TouchableOpacity
-                    onPress={() => handleSelect(item.id)}
-                    style={[styles.avatarCard, { borderColor: theme.colors.outlineVariant }]}
-                    activeOpacity={0.7}
-                  >
-                    <Avatar.Text
-                      size={48}
-                      label={initial}
-                      color="white"
-                      style={{ backgroundColor: bgColor, alignSelf: "center" }}
-                    />
-                    <Text
-                      variant="labelSmall"
-                      numberOfLines={1}
-                      style={{ textAlign: "center", marginTop: 6, fontWeight: "600", color: theme.colors.onSurface }}
-                    >
-                      {item.name}
-                    </Text>
-                    <Text
-                      variant="labelSmall"
-                      style={{ textAlign: "center", fontSize: 10, color: theme.colors.onSurfaceVariant }}
-                    >
-                      {item.role === "admin" ? "Propietario" : "Cajero"}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              }}
-            />
-          )
-        ) : (
-          <View style={{ width: "100%" }}>
-            <TouchableOpacity onPress={() => { setSelectedId(null); setError(""); }} style={{ alignSelf: "center", marginBottom: 16 }}>
-              <Avatar.Text
-                size={64}
-                label={selected.name.charAt(0).toUpperCase()}
-                color="white"
-                style={{ backgroundColor: COLORS[selected.id % COLORS.length], alignSelf: "center" }}
+            <View style={{ width: "100%" }}>
+              <TouchableOpacity onPress={() => { setSelectedId(null); setError(""); }} style={{ alignSelf: "center", marginBottom: 16 }} activeOpacity={0.8}>
+                <Avatar.Text
+                  size={64}
+                  label={selected.name.charAt(0).toUpperCase()}
+                  color="#ffffff"
+                  style={{ backgroundColor: COLORS[selected.id % COLORS.length], alignSelf: "center" }}
+                />
+                <Text variant="titleMedium" style={{ textAlign: "center", fontWeight: "700", marginTop: 4, color: theme.colors.onSurface }}>
+                  {selected.name}
+                </Text>
+                <Text variant="labelSmall" style={{ textAlign: "center", color: theme.colors.onSurfaceVariant }}>
+                  {selected.role === "admin" ? "Propietario" : "Cajero"} — tocar para cambiar
+                </Text>
+              </TouchableOpacity>
+
+              <FormInput
+                label="PIN de acceso"
+                value={pin}
+                onChangeText={(t) => { setPin(t.replace(/\D/g, "").slice(0, 6)); setError(""); }}
+                secureTextEntry
+                keyboardType="number-pad"
+                maxLength={6}
+                autoFocus
+                error={!!error}
               />
-              <Text variant="titleMedium" style={{ textAlign: "center", fontWeight: "700", marginTop: 4, color: theme.colors.onSurface }}>
-                {selected.name}
-              </Text>
-              <Text variant="labelSmall" style={{ textAlign: "center", color: theme.colors.onSurfaceVariant }}>
-                {selected.role === "admin" ? "Propietario" : "Cajero"} — tocar para cambiar
-              </Text>
-            </TouchableOpacity>
+              {error ? (
+                <Text style={{ color: theme.colors.error, fontSize: 13, marginBottom: 8 }}>{error}</Text>
+              ) : null}
 
-            <TextInput
-              label="PIN de acceso"
-              value={pin}
-              onChangeText={(t) => { setPin(t.replace(/\D/g, "").slice(0, 6)); setError(""); }}
-              mode="outlined"
-              secureTextEntry
-              keyboardType="number-pad"
-              maxLength={6}
-              autoFocus
-              error={!!error}
-              style={{ marginBottom: 8 }}
-              outlineStyle={{ borderRadius: 12 }}
-            />
-            {error ? (
-              <Text style={{ color: theme.colors.error, fontSize: 13, marginBottom: 8 }}>{error}</Text>
-            ) : null}
-
-            <Button
-              mode="contained"
-              onPress={handleLogin}
-              loading={authLoading}
-              disabled={authLoading || pin.length < 3}
-              style={{ borderRadius: 12, marginTop: 8 }}
-              buttonColor={theme.colors.primary}
-              contentStyle={{ height: 48 }}
-            >
-              {authLoading ? "Conectando..." : "Acceder"}
-            </Button>
-          </View>
-        )}
-      </View>
-    </View>
+              <RaisedButton
+                onPress={handleLogin}
+                loading={authLoading}
+                disabled={authLoading || pin.length < 3}
+                style={{ borderRadius: 14, marginTop: 8 }}
+              >
+                {authLoading ? "Conectando..." : "Acceder"}
+              </RaisedButton>
+            </View>
+          )}
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: "center", alignItems: "center", padding: 24 },
-  card: { width: "100%", maxWidth: 380, padding: 24, alignItems: "center" },
+  container: { flex: 1 },
+  scrollContent: { flexGrow: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24 },
+  card: {
+    width: "100%",
+    maxWidth: 380,
+    padding: 24,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
+    shadowOffset: { height: 8 },
+    elevation: 6,
+  },
+  accent: { width: 40, height: 4, borderRadius: 2, marginBottom: 16 },
   avatarCard: {
-    width: CARD_SIZE,
-    height: CARD_SIZE,
-    borderRadius: 16,
-    borderWidth: 1.5,
+    borderRadius: 20,
+    borderWidth: 1,
     padding: 10,
     justifyContent: "center",
     alignItems: "center",
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { height: 4 },
+    elevation: 6,
   },
+  avatarCardPressed: { opacity: 0.88 },
+  inactiveCard: { opacity: 0.55 },
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  badgeDot: { width: 6, height: 6, borderRadius: 3 },
+  badgeText: { fontSize: 10, fontWeight: "700" },
+  grid: { alignItems: "center", paddingVertical: 2 },
+  gridRow: { flexDirection: "row", gap: GAP, marginBottom: GAP },
 });
 
 export default LoginScreen;

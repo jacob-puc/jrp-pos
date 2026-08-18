@@ -6,10 +6,10 @@ export const mxNow = () => {
 };
 
 export const mxToday = () => {
-  return mxNow().toISOString().slice(0, 10);
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
 };
 
-const toUTC = (date) => {
+export const toUTC = (date) => {
   if (typeof date === "string" && date.includes(" ")) {
     return date.replace(" ", "T") + "Z";
   }
@@ -42,4 +42,16 @@ export const formatMXDateTime = (date) => {
 export const getMXDateString = (date) => {
   const d = new Date(toUTC(date));
   return d.toLocaleDateString("en-CA", { timeZone: MX_TIMEZONE });
+};
+
+export const mxWeekRange = () => {
+  const now = mxNow();
+  const day = (now.getDay() + 6) % 7;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - day);
+  const start = monday.toLocaleDateString("en-CA", { timeZone: MX_TIMEZONE });
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const end = sunday.toLocaleDateString("en-CA", { timeZone: MX_TIMEZONE });
+  return { start, end };
 };

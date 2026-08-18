@@ -6,8 +6,8 @@ const { AutoUnpackNativesPlugin } = require("@electron-forge/plugin-auto-unpack-
 module.exports = {
   packagerConfig: {
     asar: true,
-    extraResource: ["./src/db/"],
     icon: "./build/Icon.ico",
+    extraResource: ["./build/Icon.ico"],
   },
   rebuildConfig: {},
   makers: [

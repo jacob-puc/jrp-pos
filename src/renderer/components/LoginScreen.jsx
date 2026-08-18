@@ -81,7 +81,7 @@ const LoginScreen = ({ onLogin }) => {
       <Box sx={{ textAlign: "center", mb: 5, animation: "fadeIn 0.7s ease-out" }}>
         {storeLogo ? (
           <Box sx={{
-            width: 88, height: 88, borderRadius: "20px", mx: "auto", mb: 2.5, overflow: "hidden",
+            width: 88, height: 88, borderRadius: "12px", mx: "auto", mb: 2.5, overflow: "hidden",
             background: "rgba(255,255,255,0.9)",
             border: "2px solid rgba(37, 99, 235, 0.25)",
             display: "flex", alignItems: "center", justifyContent: "center",
@@ -91,7 +91,7 @@ const LoginScreen = ({ onLogin }) => {
           </Box>
         ) : (
           <Box sx={{
-            width: 80, height: 80, borderRadius: "20px", mx: "auto", mb: 2.5,
+            width: 80, height: 80, borderRadius: "12px", mx: "auto", mb: 2.5,
             background: "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)",
             display: "flex", alignItems: "center", justifyContent: "center",
             boxShadow: "0 12px 40px rgba(37, 99, 235, 0.35)",
@@ -108,7 +108,7 @@ const LoginScreen = ({ onLogin }) => {
       </Box>
 
       <Paper elevation={0} sx={{
-        width: "100%", maxWidth: 960, display: "flex", borderRadius: "24px", overflow: "hidden",
+        width: "100%", maxWidth: 960, display: "flex", borderRadius: "12px", overflow: "hidden",
         border: `1px solid ${isDark ? "rgba(59,130,246,0.15)" : "rgba(37,99,235,0.1)"}`,
         background: isDark ? "rgba(17, 24, 39, 0.95)" : "rgba(255, 255, 255, 0.95)",
         backdropFilter: "blur(20px)",
@@ -127,7 +127,7 @@ const LoginScreen = ({ onLogin }) => {
           <Box sx={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column", gap: 1.5 }}>
             {usersLoading ? (
               Array.from({ length: 4 }).map((_, i) => (
-                <Paper key={i} elevation={0} sx={{ p: 2, borderRadius: "14px", background: "transparent" }}>
+                <Paper key={i} elevation={0} sx={{ p: 2, borderRadius: "10px", background: "transparent" }}>
                   <Stack direction="row" spacing={2} alignItems="center">
                     <Skeleton variant="circular" width={48} height={48} sx={{ bgcolor: isDark ? "rgba(148,163,184,0.06)" : "rgba(100,116,139,0.06)" }} />
                     <Box sx={{ flex: 1 }}>
@@ -147,7 +147,7 @@ const LoginScreen = ({ onLogin }) => {
                   onClick={() => handleUserClick(c.id)}
                   elevation={0}
                   sx={{
-                    p: 2, cursor: "pointer", borderRadius: "14px",
+                    p: 2, cursor: "pointer", borderRadius: "10px",
                     border: `2px solid ${isSelected ? bgColor : "transparent"}`,
                     background: isSelected
                       ? (isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.03)")
@@ -220,7 +220,7 @@ const LoginScreen = ({ onLogin }) => {
                 inputProps={{ maxLength: 6, style: { textAlign: "center", fontSize: "1.8rem", letterSpacing: "12px", fontWeight: 700 } }}
                 sx={{
                   "& .MuiOutlinedInput-root": {
-                    borderRadius: "14px",
+                    borderRadius: "10px",
                     background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.02)",
                   },
                 }}
@@ -228,7 +228,7 @@ const LoginScreen = ({ onLogin }) => {
               />
 
               {error && (
-                <Alert severity="error" sx={{ mt: 2, borderRadius: "10px", py: 0.5 }}>
+                <Alert severity="error" sx={{ mt: 2, borderRadius: "6px", py: 0.5 }}>
                   {error}
                 </Alert>
               )}
@@ -240,7 +240,7 @@ const LoginScreen = ({ onLogin }) => {
                 onClick={handleSubmit}
                 disabled={loading || pin.length < 3}
                 sx={{
-                  mt: 3, py: 1.6, borderRadius: "14px", fontWeight: 700, fontSize: "1rem",
+                  mt: 3, py: 1.6, borderRadius: "10px", fontWeight: 700, fontSize: "1rem",
                   background: "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)",
                   boxShadow: "0 8px 24px rgba(37, 99, 235, 0.35)",
                   "&:hover": { background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)" },

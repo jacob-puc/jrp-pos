@@ -1,20 +1,24 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  Box, Button, Card, CardContent, Typography, Stack, useTheme,
+  Box, Button, Card, CardContent, Typography, Stack, useTheme, IconButton,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   Chip, Alert, Dialog, DialogTitle, DialogContent, DialogActions, DialogContentText,
 } from "@mui/material";
 import {
-  Backup, RestorePage, Warning, Storage,
+  Backup, RestorePage, Warning, Storage, Download, Delete, UploadFile,
 } from "@mui/icons-material";
 import CancelButton from "./CancelButton";
 import { CardSkeleton } from "./Skeletons";
+import { formatMXDate, formatMXTime } from "../utils/dateUtils";
 
 const BackupRestore = () => {
   const [backups, setBackups] = useState([]);
   const [restoreConfirm, setRestoreConfirm] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [message, setMessage] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
   const theme = useTheme();
 
   const fetchBackups = useCallback(async () => {
@@ -40,12 +44,57 @@ const BackupRestore = () => {
     if (!restoreConfirm) return;
     const result = await window.api.invoke("restore-backup", restoreConfirm.path);
     if (result.success) {
-      setMessage({ type: "success", text: "Base de datos restaurada. Reinicia la aplicación para aplicar los cambios." });
+      setMessage({ type: "success", text: "Base de datos restaurada correctamente." });
       setRestoreConfirm(null);
       fetchBackups();
     } else {
       setMessage({ type: "error", text: result.error });
       setRestoreConfirm(null);
+    }
+  };
+
+  const downloadBackup = async (b) => {
+    const result = await window.api.invoke("download-backup", b.path);
+    if (result.success) {
+      setMessage({ type: "success", text: `Respaldo guardado en: ${result.path}` });
+    } else if (!result.cancelled) {
+      setMessage({ type: "error", text: result.error });
+    }
+  };
+
+  const deleteBackup = async () => {
+    if (!deleteConfirm) return;
+    const result = await window.api.invoke("delete-backup", deleteConfirm.path);
+    if (result.success) {
+      setMessage({ type: "success", text: `Respaldo eliminado: ${deleteConfirm.name}` });
+      setDeleteConfirm(null);
+      fetchBackups();
+    } else {
+      setMessage({ type: "error", text: result.error });
+      setDeleteConfirm(null);
+    }
+  };
+
+  const importData = async () => {
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const sel = await window.api.invoke("select-import-file");
+      if (sel.cancelled) return;
+      if (!sel.success) {
+        setMessage({ type: "error", text: sel.error });
+        return;
+      }
+      const result = await window.api.invoke("import-products-data", sel.path);
+      if (result.success) {
+        setImportResult(result);
+      } else {
+        setMessage({ type: "error", text: result.error });
+      }
+    } catch (err) {
+      setMessage({ type: "error", text: err.message });
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -93,6 +142,9 @@ const BackupRestore = () => {
             <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
               {backups.length} respaldo{backups.length !== 1 ? "s" : ""} disponible{backups.length !== 1 ? "s" : ""}
             </Typography>
+            <Typography variant="caption" color="textSecondary" sx={{ fontFamily: "monospace", display: "block", mb: 1 }}>
+              Se guardan en: Documentos\POSBackups
+            </Typography>
             <Typography variant="h3" sx={{ fontWeight: 700, color: theme.palette.warning.main }}>
               {backups.length}
             </Typography>
@@ -100,6 +152,23 @@ const BackupRestore = () => {
         </Card>
       </Stack>
       )}
+
+      <Card sx={{ mb: 4, p: 3, textAlign: "center",
+        background: "linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(16, 185, 129, 0.12) 100%)",
+        border: "2px solid rgba(16, 185, 129, 0.2)" }}>
+        <CardContent>
+          <UploadFile sx={{ fontSize: 48, color: theme.palette.success.main, mb: 2 }} />
+          <Typography variant="h5" sx={{ fontWeight: 700, mb: 1 }}>Importar Datos</Typography>
+          <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
+            Trae productos desde un archivo CSV o una base de datos SQLite.
+            Solo se importan las columnas que coinciden; lo demás queda con valores por defecto.
+          </Typography>
+          <Button variant="contained" color="success" size="large" onClick={importData}
+            startIcon={<UploadFile />} disabled={importing}>
+            {importing ? "Importando..." : "Importar archivo CSV o base de datos"}
+          </Button>
+        </CardContent>
+      </Card>
 
       {!loading && backups.length > 0 && (
         <Card>
@@ -123,17 +192,27 @@ const BackupRestore = () => {
                       <Chip label={formatSize(b.size)} size="small" variant="outlined" />
                     </TableCell>
                     <TableCell>
-                      <Typography variant="body2">{new Date(b.date).toLocaleDateString()}</Typography>
-                      <Typography variant="caption" color="textSecondary">{new Date(b.date).toLocaleTimeString()}</Typography>
+                      <Typography variant="body2">{formatMXDate(b.date)}</Typography>
+                      <Typography variant="caption" color="textSecondary">{formatMXTime(b.date)}</Typography>
                     </TableCell>
                     <TableCell align="center">
-                      <Button
-                        variant="outlined" color="warning" size="small"
-                        startIcon={<RestorePage />}
-                        onClick={() => setRestoreConfirm(b)}
-                      >
-                        Restaurar
-                      </Button>
+                      <Stack direction="row" spacing={1} justifyContent="center" alignItems="center">
+                        <IconButton size="small" title="Descargar respaldo" onClick={() => downloadBackup(b)}
+                          sx={{ color: "text.secondary", "&:hover": { color: "primary.main" } }}>
+                          <Download fontSize="small" />
+                        </IconButton>
+                        <IconButton size="small" title="Eliminar respaldo" onClick={() => setDeleteConfirm(b)}
+                          sx={{ color: "text.secondary", "&:hover": { color: "error.main" } }}>
+                          <Delete fontSize="small" />
+                        </IconButton>
+                        <Button
+                          variant="outlined" color="warning" size="small"
+                          startIcon={<RestorePage />}
+                          onClick={() => setRestoreConfirm(b)}
+                        >
+                          Restaurar
+                        </Button>
+                      </Stack>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -148,6 +227,28 @@ const BackupRestore = () => {
           <Typography color="textSecondary">No hay respaldos disponibles. Crea tu primer respaldo.</Typography>
         </Card>
       )}
+
+      <Dialog open={!!deleteConfirm} onClose={() => setDeleteConfirm(null)}>
+        <DialogTitle>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <Warning color="error" />
+            Eliminar Respaldo
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            ¿Eliminar el respaldo "{deleteConfirm?.name}"?
+            <br /><br />
+            Se quitará el archivo de la carpeta Documentos\POSBackups.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions sx={{ p: 2.5 }}>
+          <CancelButton onClick={() => setDeleteConfirm(null)}>Cancelar</CancelButton>
+          <Button onClick={deleteBackup} color="error" variant="contained" startIcon={<Delete />}>
+            Eliminar
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={!!restoreConfirm} onClose={() => setRestoreConfirm(null)}>
         <DialogTitle>
@@ -169,6 +270,25 @@ const BackupRestore = () => {
           <Button onClick={restoreBackup} color="warning" variant="contained" startIcon={<RestorePage />}>
             Restaurar
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={!!importResult} onClose={() => setImportResult(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Importación completada</DialogTitle>
+        <DialogContent>
+          <DialogContentText component="div">
+            <ul style={{ margin: 0, paddingLeft: 20 }}>
+              <li>Productos importados: <strong>{importResult?.imported ?? 0}</strong></li>
+              <li>Omitidos (duplicados o sin nombre): <strong>{importResult?.skipped ?? 0}</strong></li>
+              <li>Con errores: <strong>{importResult?.errors ?? 0}</strong></li>
+            </ul>
+            <Box sx={{ mt: 2, fontSize: "0.85rem", color: "text.secondary" }}>
+              Los productos con código de barras ya existente se omiten.
+            </Box>
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions sx={{ p: 2.5 }}>
+          <Button onClick={() => setImportResult(null)} variant="contained">Aceptar</Button>
         </DialogActions>
       </Dialog>
     </Box>

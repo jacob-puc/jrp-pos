@@ -103,7 +103,7 @@ const StoreSettingsDialog = ({ open, onClose }) => {
       PaperProps={{
         sx: {
           background: isDark ? "rgba(17, 24, 39, 0.98)" : "rgba(255, 255, 255, 0.98)",
-          borderRadius: "24px",
+          borderRadius: "12px",
           border: `1px solid ${isDark ? "rgba(59, 130, 246, 0.15)" : "rgba(100, 116, 139, 0.2)"}`,
         },
       }}
@@ -128,7 +128,7 @@ const StoreSettingsDialog = ({ open, onClose }) => {
             fullWidth
             variant="outlined"
             autoFocus
-            InputProps={{ sx: { borderRadius: "12px" } }}
+            InputProps={{ sx: { borderRadius: "8px" } }}
           />
 
           <TextField
@@ -140,7 +140,7 @@ const StoreSettingsDialog = ({ open, onClose }) => {
             multiline
             rows={2}
             InputProps={{
-              sx: { borderRadius: "12px" },
+              sx: { borderRadius: "8px" },
               startAdornment: <LocationOn sx={{ color: "#64748b", mr: 1, fontSize: 18 }} />,
             }}
           />
@@ -154,7 +154,7 @@ const StoreSettingsDialog = ({ open, onClose }) => {
           />
           <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
             <Box sx={{
-              width: 64, height: 64, borderRadius: "14px", flexShrink: 0,
+              width: 64, height: 64, borderRadius: "10px", flexShrink: 0,
               border: "1px solid", borderColor: "divider", overflow: "hidden",
               display: "flex", alignItems: "center", justifyContent: "center",
               bgcolor: "background.paper",
@@ -176,7 +176,7 @@ const StoreSettingsDialog = ({ open, onClose }) => {
                   variant="outlined"
                   startIcon={<CloudUpload />}
                   onClick={() => fileInputRef.current?.click()}
-                  sx={{ borderRadius: "10px", textTransform: "none" }}
+                  sx={{ borderRadius: "6px", textTransform: "none" }}
                 >
                   Subir logo
                 </Button>
@@ -186,7 +186,7 @@ const StoreSettingsDialog = ({ open, onClose }) => {
                     color="error"
                     startIcon={<DeleteOutline />}
                     onClick={() => setLogo("")}
-                    sx={{ borderRadius: "10px", textTransform: "none" }}
+                    sx={{ borderRadius: "6px", textTransform: "none" }}
                   >
                     Quitar
                   </Button>
@@ -229,7 +229,7 @@ const StoreSettingsDialog = ({ open, onClose }) => {
       </DialogContent>
 
       <DialogActions sx={{ p: 2, pt: 0 }}>
-        <Button onClick={onClose} variant="outlined" sx={{ borderRadius: "10px" }}>
+        <Button onClick={onClose} variant="outlined" sx={{ borderRadius: "6px" }}>
           Cancelar
         </Button>
         <Button
@@ -238,7 +238,7 @@ const StoreSettingsDialog = ({ open, onClose }) => {
           disabled={isSubmitting}
           startIcon={<Save />}
           sx={{
-            borderRadius: "10px",
+            borderRadius: "6px",
             background: isDark ? "linear-gradient(135deg, #234e8c, #2d5fa8)" : "#234e8c",
             "&:hover": { background: isDark ? "linear-gradient(135deg, #1a3b6e, #234e8c)" : "#1a3b6e" },
           }}

@@ -5,12 +5,12 @@ const CancelButton = ({ children = "Cancelar", sx, ...props }) => (
   <Button
     variant="outlined"
     sx={{
-      borderColor: "error.main",
-      color: "error.main",
-      backgroundColor: "rgba(239,68,68,0.06)",
+      borderColor: "#64748b",
+      color: "#64748b",
+      backgroundColor: "rgba(100,116,139,0.06)",
       "&:hover": {
-        backgroundColor: "rgba(239,68,68,0.12)",
-        borderColor: "error.main",
+        backgroundColor: "rgba(100,116,139,0.12)",
+        borderColor: "#64748b",
       },
       ...sx,
     }}
