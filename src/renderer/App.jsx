@@ -20,6 +20,7 @@ const Reports = React.lazy(() => import("./components/Reports"));
 const BackupRestore = React.lazy(() => import("./components/BackupRestore"));
 const Cashiers = React.lazy(() => import("./components/Cashiers"));
 const Categories = React.lazy(() => import("./components/Categories"));
+import ErrorBoundary from "./components/ErrorBoundary";
 import { CashierProvider, useCashier } from "./contexts/CashierContext";
 import { ThemeModeContext } from "./contexts/ThemeContext";
 
@@ -428,9 +429,11 @@ const AppInner = () => {
 };
 
 const App = () => (
-  <CashierProvider>
-    <AppInner />
-  </CashierProvider>
+  <ErrorBoundary>
+    <CashierProvider>
+      <AppInner />
+    </CashierProvider>
+  </ErrorBoundary>
 );
 
 export default App;

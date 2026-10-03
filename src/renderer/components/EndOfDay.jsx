@@ -135,6 +135,15 @@ const EndOfDay = () => {
   const [outsideSales, setOutsideSales] = useState([]);
   const [outsideDialogOpen, setOutsideDialogOpen] = useState(false);
 
+  // ─── Recuperación tras corte de luz ─────────────────────────
+  // Cajas 'open' de días anteriores + si el apagado fue sucio.
+  const [pendingRegisters, setPendingRegisters] = useState([]);
+  const [wasUnclean, setWasUnclean] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [recoveryTarget, setRecoveryTarget] = useState(null);
+  const [recoveryDeclared, setRecoveryDeclared] = useState("");
+  const [recoveryLoading, setRecoveryLoading] = useState(false);
+
   const [turnoSearch, setTurnoSearch] = useState("");
   const turnoSearchRef = React.useRef(null);
 
@@ -152,7 +161,7 @@ const EndOfDay = () => {
 
       const isOpenReg = reg?.status === "open";
 
-      const [salesResult, outsideResult, prevResult, expResult] =
+      const [salesResult, outsideResult, prevResult, expResult, recResult] =
         await Promise.all([
           window.api.invoke("get-sales-for-today", {
             date: mxToday(),
@@ -170,7 +179,25 @@ const EndOfDay = () => {
                 role: cashier?.role,
               })
             : Promise.resolve({ success: true, expenses: [] }),
+          window.api.invoke("get-recovery-info", {
+            cashierId: cashier?.id,
+            role: cashier?.role,
+          }),
         ]);
+
+      if (recResult && recResult.success) {
+        const pend = recResult.pending || [];
+        setPendingRegisters(pend);
+        setWasUnclean(!!recResult.wasUncleanShutdown);
+        // Si hay caja de otro día pendiente, pregunta al iniciar si se
+        // quiere hacer el corte correspondiente a ese día/horario.
+        if (pend.length > 0) {
+          const first = pend[0];
+          setRecoveryTarget(first);
+          setRecoveryDeclared("");
+          setRecoveryOpen(true);
+        }
+      }
 
       if (salesResult.success) {
         const fetchedSales = salesResult.sales || [];
@@ -335,7 +362,7 @@ const EndOfDay = () => {
     const result = await window.api.invoke("close-cash-register", {
       declaredClose: parseFloat(declaredClose) || 0,
 
-      expenses: parseFloat(expenses) || 0,
+      expenses: 0,
 
       name:
         registerName.trim() ||
@@ -526,6 +553,47 @@ const EndOfDay = () => {
       }
     } finally {
       setCancelExpenseLoading(false);
+    }
+  };
+
+  const handleRecoveryClose = async () => {
+    if (!recoveryTarget) return;
+    setRecoveryLoading(true);
+    try {
+      const result = await window.api.invoke("close-cash-register", {
+        registerId: recoveryTarget.id,
+        declaredClose: parseFloat(recoveryDeclared) || 0,
+        expenses: 0,
+        name:
+          registerName.trim() ||
+          recoveryTarget.opener_name ||
+          `Corte recuperado ${recoveryTarget.date}`,
+        cashierId: cashier?.id,
+        role: cashier?.role,
+        force: cashier?.role === "admin",
+      });
+      if (result.success) {
+        const remaining = pendingRegisters.filter(
+          (r) => r.id !== recoveryTarget.id,
+        );
+        setPendingRegisters(remaining);
+        setRecoveryOpen(false);
+        setRecoveryTarget(remaining.length > 0 ? remaining[0] : null);
+        if (remaining.length > 0) setRecoveryOpen(true);
+        await fetchData();
+        setRegisterMessage({
+          type: "success",
+          text:
+            `Corte del ${recoveryTarget.date} recuperado. Esperado: $${Number(
+              result.expectedClose || 0,
+            ).toFixed(2)}, Diferencia: $${Number(result.difference || 0).toFixed(2)}. ` +
+            "Todas las ventas quedaron guardadas en ese corte.",
+        });
+      } else {
+        setRegisterMessage({ type: "error", text: result.error });
+      }
+    } finally {
+      setRecoveryLoading(false);
     }
   };
 
@@ -1376,16 +1444,13 @@ const EndOfDay = () => {
   const StatusIcon = statusBanner.icon;
 
   // Comparamos el efectivo declarado contra el efectivo que debería haber:
-  // apertura + ventas en efectivo - egresos YA registrados en el sistema
-  // (retiros hechos durante el turno) - el gasto adicional que se esté
-  // capturando ahora mismo en el campo "Gastos / Egresos" del cierre.
+  // apertura + ventas en efectivo - egresos YA registrados en el sistema.
   // Si el esperado sale negativo, la declaración reduce la deuda en lugar
   // de sumarse encima (esperado + declarado).
   const baseExpected =
     Number(register?.opening_balance || 0) +
     totalCash -
-    Number(register?.expenses || 0) -
-    (parseFloat(expenses) || 0);
+    Number(register?.expenses || 0);
   const openCloseDifference =
     baseExpected >= 0
       ? (parseFloat(declaredClose) || 0) - baseExpected
@@ -2667,31 +2732,6 @@ const EndOfDay = () => {
               />
             </Box>
 
-            <Box>
-              <FieldLabel>Gastos / Egresos</FieldLabel>
-
-              <TextField
-                type="number"
-                value={expenses}
-                fullWidth
-                onChange={(e) => setExpenses(e.target.value)}
-                placeholder="0.00"
-                sx={inputSx}
-                slotProps={{
-                  input: {
-                    startAdornment: (
-                      <InputAdornment position="start">
-                        <Banknote size={18} color="#64748b" />
-                      </InputAdornment>
-                    ),
-                  },
-                }}
-                inputProps={{
-                  min: 0,
-                  step: 0.01,
-                }}
-              />
-            </Box>
           </Stack>
 
           {/* CLOSE SUMMARY */}
@@ -3173,6 +3213,108 @@ const EndOfDay = () => {
             onClick={() => setOutsideDialogOpen(false)}
           >
             Cerrar
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* RECOVERY: corte pendiente tras corte de luz */}
+      <Dialog
+        open={recoveryOpen && !!recoveryTarget}
+        onClose={() => !recoveryLoading && setRecoveryOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <TriangleAlert size={22} color="#d97706" />
+            <Typography variant="h6" fontWeight={700}>
+              Corte pendiente del {recoveryTarget?.date}
+            </Typography>
+          </Stack>
+        </DialogTitle>
+        <DialogContent dividers>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            {wasUnclean
+              ? "El sistema se apagó de forma inesperada (corte de luz). Se encontró una caja sin cerrar."
+              : "Hay una caja abierta de un día anterior."}{" "}
+            Todas sus ventas están guardadas. Realiza ahora el corte
+            correspondiente al día/horario {recoveryTarget?.date} antes de
+            abrir una caja nueva.
+          </Alert>
+          {recoveryTarget && (
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="body2" color="text.secondary">
+                Apertura:{" "}
+                <b>${Number(recoveryTarget.opening_balance || 0).toFixed(2)}</b>{" "}
+                · Efectivo:{" "}
+                <b>${Number(recoveryTarget.cash_sales || 0).toFixed(2)}</b> ·
+                Tarjeta:{" "}
+                <b>${Number(recoveryTarget.card_sales || 0).toFixed(2)}</b> ·
+                Transferencia:{" "}
+                <b>${Number(recoveryTarget.transfer_sales || 0).toFixed(2)}</b>
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Ventas: <b>{recoveryTarget.sale_count || 0}</b> · Gastos:{" "}
+                <b>${Number(recoveryTarget.expenses || 0).toFixed(2)}</b> ·
+                Esperado en caja:{" "}
+                <b>
+                  $
+                  {Number(
+                    recoveryTarget.expected_close_computed || 0,
+                  ).toFixed(2)}
+                </b>
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Abierta: {formatMXDateTime(recoveryTarget.opened_at)} por{" "}
+                {recoveryTarget.opener_name || "cajero"}
+              </Typography>
+            </Box>
+          )}
+          <FieldLabel>Efectivo contado para este corte</FieldLabel>
+          <TextField
+            type="number"
+            fullWidth
+            autoFocus
+            value={recoveryDeclared}
+            disabled={recoveryLoading}
+            onChange={(e) => setRecoveryDeclared(e.target.value)}
+            placeholder="0.00"
+            sx={inputSx}
+            slotProps={{
+              input: {
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <Banknote size={18} color="#64748b" />
+                  </InputAdornment>
+                ),
+              },
+            }}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 3, justifyContent: "space-between" }}>
+          <Button
+            onClick={() => setRecoveryOpen(false)}
+            disabled={recoveryLoading}
+            sx={{ textTransform: "none" }}
+          >
+            Hacerlo después
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            disabled={recoveryLoading}
+            onClick={handleRecoveryClose}
+            startIcon={
+              recoveryLoading ? (
+                <CircularProgress size={18} color="inherit" />
+              ) : (
+                <CircleCheck size={18} />
+              )
+            }
+          >
+            {recoveryLoading
+              ? "Cerrando..."
+              : `Cerrar corte del ${recoveryTarget?.date}`}
           </Button>
         </DialogActions>
       </Dialog>

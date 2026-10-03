@@ -1,10 +1,12 @@
 import React, { useState, useRef, useCallback, useEffect } from "react";
-import { View, StyleSheet, Vibration, Dimensions } from "react-native";
+import { View, StyleSheet, Vibration, Dimensions, TouchableOpacity } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
 import { Text, Button, ActivityIndicator, Snackbar, Chip, useTheme, SegmentedButtons, IconButton, Switch } from "react-native-paper";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { getProductByBarcode, createProduct, addStock } from "../services/api";
 import { computeCostConfirm } from "../utils/costLogic";
+import { getScanMode } from "../utils/scanSettings";
 import ModalSheet from "../components/ModalSheet";
 import FormInput, { FormSection } from "../components/FormInput";
 import RaisedButton from "../components/RaisedButton";
@@ -60,6 +62,12 @@ const ScannerScreen = ({ cashier }) => {
   const [showStockModal, setShowStockModal] = useState(false);
   const [snackbar, setSnackbar] = useState({ visible: false, text: "" });
 
+  // Modo de escaneo y flash
+  const [scanMode, setScanModeState] = useState("auto");
+  const [torch, setTorch] = useState(false);
+  const [manualScannedCode, setManualScannedCode] = useState(null);
+  const [showManualConfirm, setShowManualConfirm] = useState(false);
+
   const [newProduct, setNewProduct] = useState({ ...EMPTY_FORM });
 
   const [stockQty, setStockQty] = useState("");
@@ -70,6 +78,22 @@ const ScannerScreen = ({ cashier }) => {
 
   const lastCodeRef = useRef("");
   const lastScanAtRef = useRef(0);
+  const scanModeRef = useRef("auto");
+  scanModeRef.current = scanMode;
+
+  // Actualizar modo cada vez que la pantalla gana foco (por si cambió en Ajustes)
+  useFocusEffect(
+    useCallback(() => {
+      let isMounted = true;
+      (async () => {
+        const mode = await getScanMode();
+        if (isMounted) setScanModeState(mode);
+      })();
+      return () => {
+        isMounted = false;
+      };
+    }, [])
+  );
 
   useEffect(() => {
     const timer = setTimeout(() => setScannerReady(true), SCANNER_DELAY_MS);
@@ -78,23 +102,8 @@ const ScannerScreen = ({ cashier }) => {
 
   const showMsg = (text) => setSnackbar({ visible: true, text });
 
-  const handleBarCodeScanned = useCallback(async ({ data }) => {
-    const code = String(data || "").trim();
-    const now = Date.now();
-    if (!scannerReady || !scanning || loading) return;
-    if (code === lastCodeRef.current && now - lastScanAtRef.current < SCAN_DEBOUNCE_MS) return;
-
-    lastCodeRef.current = code;
-    lastScanAtRef.current = now;
-    setScanning(false);
-    setDetected(true);
-    Vibration.vibrate(100);
-    showMsg("¡Código de barras detectado!");
-
-    await new Promise((resolve) => setTimeout(resolve, DETECT_FEEDBACK_MS));
-    setDetected(false);
+  const processProductCode = async (code) => {
     setLoading(true);
-
     try {
       const result = await getProductByBarcode(code);
       setProduct(result.product);
@@ -110,7 +119,53 @@ const ScannerScreen = ({ cashier }) => {
     } finally {
       setLoading(false);
     }
-  }, [scannerReady, scanning, loading]);
+  };
+
+  const handleBarCodeScanned = useCallback(async ({ data }) => {
+    const code = String(data || "").trim();
+    const now = Date.now();
+    if (!scannerReady || !scanning || loading || showManualConfirm) return;
+    
+    // Intervalo de lectura en modo automático (~3000ms para asegurar lectura estable)
+    const requiredInterval = scanModeRef.current === "auto" ? 3000 : 1500;
+    if (code === lastCodeRef.current && now - lastScanAtRef.current < requiredInterval) return;
+
+    lastCodeRef.current = code;
+    lastScanAtRef.current = now;
+    setScanning(false);
+    setDetected(true);
+    Vibration.vibrate(100);
+
+    if (scanModeRef.current === "manual") {
+      // Modo manual: marco cambia a verde y se abre la ventana para confirmar lectura
+      setManualScannedCode(code);
+      setShowManualConfirm(true);
+      showMsg(`Código detectado: ${code}`);
+      return;
+    }
+
+    // Modo automático: feedback visual e inicio inmediato de búsqueda
+    showMsg(`¡Código detectado! (${code})`);
+    await new Promise((resolve) => setTimeout(resolve, DETECT_FEEDBACK_MS));
+    setDetected(false);
+    await processProductCode(code);
+  }, [scannerReady, scanning, loading, showManualConfirm]);
+
+  const confirmManualScan = async () => {
+    const code = manualScannedCode;
+    setShowManualConfirm(false);
+    setDetected(false);
+    if (code) {
+      await processProductCode(code);
+    }
+  };
+
+  const cancelManualScan = () => {
+    setShowManualConfirm(false);
+    setManualScannedCode(null);
+    setDetected(false);
+    setScanning(true);
+  };
 
   const performAddStock = async (updateCostPrice) => {
     const qty = parseInt(stockQty);
@@ -203,8 +258,9 @@ const ScannerScreen = ({ cashier }) => {
     setScanning(true);
   };
 
-  const frameColor = !scannerReady ? FRAME_WAIT_COLOR : detected ? FRAME_DETECTED_COLOR : FRAME_IDLE_COLOR;
-  const statusText = !scannerReady ? "Preparando escáner..." : detected ? "¡Código de barras detectado!" : "Enfoca el código de barras";
+  const isCodeDetected = detected || showManualConfirm;
+  const frameColor = !scannerReady ? FRAME_WAIT_COLOR : isCodeDetected ? FRAME_DETECTED_COLOR : FRAME_IDLE_COLOR;
+  const statusText = !scannerReady ? "Preparando escáner..." : isCodeDetected ? "¡Código detectado!" : "Enfoca el código de barras";
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
@@ -224,9 +280,39 @@ const ScannerScreen = ({ cashier }) => {
           <CameraView
             style={styles.camera}
             facing="back"
+            enableTorch={torch}
             barcodeScannerSettings={{ barcodeTypes: ["ean13", "ean8", "code128", "code39", "upc_a", "upc_e"] }}
             onBarcodeScanned={handleBarCodeScanned}
           />
+          {/* Barra superior de controles sobre la cámara (Flash y Modo) */}
+          <View style={styles.cameraTopBar}>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              style={[styles.cameraControlBtn, torch && styles.cameraControlBtnActive]}
+              onPress={() => setTorch((prev) => !prev)}
+            >
+              <MaterialCommunityIcons
+                name={torch ? "flashlight" : "flashlight-off"}
+                size={22}
+                color={torch ? "#f59e0b" : "#ffffff"}
+              />
+              <Text style={[styles.cameraControlText, torch && { color: "#f59e0b" }]}>
+                {torch ? "Flash ON" : "Flash OFF"}
+              </Text>
+            </TouchableOpacity>
+
+            <View style={styles.modeBadge}>
+              <MaterialCommunityIcons
+                name={scanMode === "manual" ? "hand-pointing-up" : "motion-sensor"}
+                size={16}
+                color="#ffffff"
+              />
+              <Text style={styles.modeBadgeText}>
+                {scanMode === "manual" ? "Modo Manual" : "Modo Automático"}
+              </Text>
+            </View>
+          </View>
+
           <View style={styles.overlay} pointerEvents="none">
             <View style={styles.scanFrame}>
               <View style={[styles.scanBackdrop, { backgroundColor: frameColor, opacity: 0.08 }]} />
@@ -429,6 +515,36 @@ const ScannerScreen = ({ cashier }) => {
         )}
       </ModalSheet>
 
+      {/* Modal de confirmación en modo manual */}
+      <ModalSheet visible={showManualConfirm} onDismiss={cancelManualScan}>
+        <SheetHeader title="Confirmar Lectura" onClose={cancelManualScan} />
+        <View style={{ alignItems: "center", paddingVertical: 16 }}>
+          <View style={[styles.productIcon, { width: 56, height: 56, borderRadius: 28, backgroundColor: theme.colors.primaryContainer, marginBottom: 12 }]}>
+            <MaterialCommunityIcons name="barcode" size={32} color={theme.colors.primary} />
+          </View>
+          <Text variant="titleMedium" style={{ fontWeight: "700", color: theme.colors.onSurface, marginBottom: 4 }}>
+            Código detectado
+          </Text>
+          <View style={[styles.codeDisplayCard, { backgroundColor: theme.colors.surfaceVariant }]}>
+            <Text style={[styles.codeDisplayText, { color: theme.colors.primary }]}>
+              {manualScannedCode}
+            </Text>
+          </View>
+          <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 13, textAlign: "center", marginTop: 12, marginBottom: 20 }}>
+            ¿El código leído es correcto? Presiona confirmar para consultar o registrar el producto.
+          </Text>
+        </View>
+
+        <View style={{ flexDirection: "row", gap: 12, marginBottom: 8 }}>
+          <Button mode="outlined" onPress={cancelManualScan} style={{ flex: 1, borderRadius: 12 }} contentStyle={{ height: 50 }}>
+            Reintentar
+          </Button>
+          <RaisedButton onPress={confirmManualScan} style={{ flex: 1 }}>
+            Confirmar
+          </RaisedButton>
+        </View>
+      </ModalSheet>
+
       <Snackbar visible={snackbar.visible} onDismiss={() => setSnackbar({ visible: false, text: "" })}
         duration={3000} style={{ marginBottom: 70 }}>
         {snackbar.text}
@@ -507,6 +623,63 @@ const styles = StyleSheet.create({
   infoRow: {
     flexDirection: "row", justifyContent: "space-between", alignItems: "center",
     paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "rgba(100,116,139,0.18)",
+  },
+  cameraTopBar: {
+    position: "absolute",
+    top: 16,
+    left: 16,
+    right: 16,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    zIndex: 10,
+  },
+  cameraControlBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(0, 0, 0, 0.65)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.2)",
+  },
+  cameraControlBtnActive: {
+    backgroundColor: "rgba(245, 158, 11, 0.25)",
+    borderColor: "#f59e0b",
+  },
+  cameraControlText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  modeBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(0, 0, 0, 0.65)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.15)",
+  },
+  modeBadgeText: {
+    color: "#f1f5f9",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  codeDisplayCard: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 12,
+    marginTop: 6,
+  },
+  codeDisplayText: {
+    fontSize: 22,
+    fontWeight: "800",
+    letterSpacing: 1.5,
   },
 });
 

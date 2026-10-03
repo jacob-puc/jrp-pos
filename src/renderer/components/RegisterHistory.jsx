@@ -53,6 +53,7 @@ import {
 import { CardSkeleton } from "./Skeletons";
 import CancelButton from "./CancelButton";
 import { formatMXTime, formatMXDate } from "../utils/dateUtils";
+import { unitLabels } from "../utils/unitLabels";
 import { jsPDF } from "jspdf";
 import { applyPlugin } from "jspdf-autotable";
 import { useCashier } from "../contexts/CashierContext";
@@ -68,6 +69,7 @@ const RegisterHistory = () => {
   const [detail, setDetail] = useState(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [expandedSaleId, setExpandedSaleId] = useState(null);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(5);
   const theme = useTheme();
@@ -97,6 +99,16 @@ const RegisterHistory = () => {
     fetchData();
   }, [fetchData]);
 
+  // Productos agrupados por venta para el desglose tipo nota
+  const itemsBySale = useMemo(() => {
+    const map = {};
+    (detail?.items || []).forEach((it) => {
+      if (!map[it.sale_id]) map[it.sale_id] = [];
+      map[it.sale_id].push(it);
+    });
+    return map;
+  }, [detail]);
+
   const filteredRegisters = useMemo(() => {
     if (filterCashier === "all") return closedRegisters;
     return closedRegisters.filter(
@@ -119,6 +131,7 @@ const RegisterHistory = () => {
   const handleViewRegisterDetail = async (registerId) => {
     setDetailLoading(true);
     setDetail(null);
+    setExpandedSaleId(null);
     setDetailOpen(true);
     const result = await window.api.invoke(
       "get-register-sales-detail",
@@ -247,20 +260,63 @@ const RegisterHistory = () => {
         t.id,
         t.type,
         t.method,
-        `${t.amount >= 0 ? "+" : "-"}$${fmtMX(Math.abs(t.amount))}`,
+        t.type === "Cancelado" ? "Cancelado" : `${t.amount >= 0 ? "+" : "-"}$${fmtMX(Math.abs(t.amount))}`,
       ]),
     });
 
-    doc.autoTable({
-      startY: doc.lastAutoTable.finalY + 8,
-      head: [["Producto", "Cantidad", "Precio", "Subtotal"]],
-      body: detail.items.map((i) => [
-        i.product_name || "Producto",
-        String(i.quantity),
-        `$${fmtMX(i.price_at_sale)}`,
-        `$${fmtMX(i.quantity * i.price_at_sale)}`,
-      ]),
+    // ─── Desglose de productos por venta ───────────────────────
+    const itemsBySale = {};
+    (detail.items || []).forEach((it) => {
+      if (!itemsBySale[it.sale_id]) itemsBySale[it.sale_id] = [];
+      itemsBySale[it.sale_id].push(it);
     });
+
+    const saleIds = Object.keys(itemsBySale);
+    if (saleIds.length > 0) {
+      const body = [];
+      saleIds.forEach((saleId, idx) => {
+        const items = itemsBySale[saleId];
+        const saleTotal = items.reduce(
+          (s, i) => s + i.quantity * Number(i.price_at_sale || 0),
+          0,
+        );
+        // Encabezado de la venta
+        const isSaleCancelled = detail.sales.find((s) => String(s.id) === String(saleId) && s.status === "cancelado");
+        body.push([
+          { content: `Venta #V-${saleId}${isSaleCancelled ? " (CANCELADA)" : ""}`, colSpan: 4, styles: { fontStyle: "bold", fillColor: isSaleCancelled ? [255, 235, 235] : [230, 240, 255], textColor: isSaleCancelled ? [180, 30, 30] : [30, 41, 59] } },
+        ]);
+        // Productos de la venta
+        items.forEach((i) => {
+          const isCancelled = i.status === "cancelado";
+          body.push([
+            isCancelled ? `${i.product_name || "Producto"} (Cancelado)` : i.product_name || "Producto",
+            String(i.quantity),
+            `$${fmtMX(i.price_at_sale)}`,
+            isCancelled ? "Cancelado" : `$${fmtMX(i.quantity * i.price_at_sale)}`,
+          ]);
+        });
+        // Total de la venta
+        body.push([
+          { content: `Total Venta #V-${saleId}`, colSpan: 3, styles: { fontStyle: "bold", halign: "right", fillColor: isSaleCancelled ? [255, 235, 235] : [240, 245, 255] } },
+          { content: isSaleCancelled ? "Cancelado" : `$${fmtMX(saleTotal)}`, styles: { fontStyle: "bold", fillColor: isSaleCancelled ? [255, 235, 235] : [240, 245, 255] } },
+        ]);
+        // Línea separadora entre ventas
+        if (idx < saleIds.length - 1) {
+          body.push([
+            { content: "", colSpan: 4, styles: { fillColor: [255, 255, 255], minCellHeight: 2 } },
+          ]);
+        }
+      });
+
+      doc.autoTable({
+        startY: doc.lastAutoTable.finalY + 8,
+        head: [["Producto", "Cantidad", "Precio Unit.", "Subtotal"]],
+        body,
+        theme: "grid",
+        styles: { fontSize: 8, cellPadding: 2 },
+        headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255] },
+      });
+    }
 
     doc.autoTable({
       startY: doc.lastAutoTable.finalY + 8,
@@ -381,6 +437,214 @@ const RegisterHistory = () => {
           "& .MuiChip-label": { px: 1.2 },
         }}
       />
+    );
+  };
+
+  // Une líneas repetidas del mismo producto (ej. 2 + 1 = 3 de estos)
+  const groupSaleItems = (items) => {
+    const map = new Map();
+    (items || []).forEach((i) => {
+      const key = `${i.product_id ?? `m:${i.product_name}`}|${i.price_at_sale}`;
+      const prev = map.get(key);
+      if (prev) {
+        prev.quantity += i.quantity;
+      } else {
+        map.set(key, { ...i, quantity: i.quantity });
+      }
+    });
+    return Array.from(map.values());
+  };
+
+  // Nota / ticket con el desglose de una venta individual
+  const SaleReceipt = ({ sale, items }) => {
+    const active = (items || []).filter((i) => i.status !== "cancelado");
+    const lines = groupSaleItems(active.length > 0 ? active : items);
+    const subtotal = lines.reduce(
+      (s, i) => s + i.quantity * Number(i.price_at_sale || 0),
+      0,
+    );
+    const total = Number(sale.amount || 0);
+    const adjust = subtotal - total;
+    const qtyTotal = lines.reduce((s, i) => s + i.quantity, 0);
+    const cancelled = sale.status === "cancelado";
+    const adjustColor = adjust > 0 ? "#dc2626" : "#059669";
+    const mono = { fontFamily: "'Courier New', Courier, monospace" };
+    const dashed = { borderTop: "1px dashed", borderColor: "divider" };
+
+    return (
+      <Box sx={{ maxWidth: 420, mx: "auto" }}>
+        <Box
+          sx={{
+            border: "1px dashed",
+            borderColor: "divider",
+            borderRadius: "8px",
+            px: 2,
+            py: 1.5,
+            bgcolor: isDark ? "rgba(0,0,0,0.3)" : "#fffdf5",
+          }}
+        >
+          <Typography
+            sx={{
+              ...mono,
+              textAlign: "center",
+              fontWeight: 800,
+              fontSize: "0.78rem",
+              letterSpacing: "0.12em",
+            }}
+          >
+            NOTA DE VENTA #V-{sale.saleId}
+          </Typography>
+          <Typography
+            sx={{
+              ...mono,
+              textAlign: "center",
+              fontSize: "0.7rem",
+              color: "text.secondary",
+              mb: 1,
+            }}
+          >
+            {formatMXTime(sale.time)} · {sale.methodLabel || "—"}
+          </Typography>
+
+          <Box sx={dashed} />
+
+          <Box sx={{ py: 0.5 }}>
+            {lines.length === 0 && (
+              <Typography
+                sx={{
+                  ...mono,
+                  fontSize: "0.74rem",
+                  textAlign: "center",
+                  color: "text.secondary",
+                  py: 1,
+                }}
+              >
+                Sin productos registrados
+              </Typography>
+            )}
+            {lines.map((i, k) => {
+              const per = unitLabels(i.sale_unit);
+              return (
+                <Box
+                  key={k}
+                  sx={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "flex-start",
+                    gap: 1.5,
+                    py: 0.4,
+                  }}
+                >
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography
+                      sx={{ ...mono, fontSize: "0.78rem", fontWeight: 700 }}
+                    >
+                      {i.quantity} × {i.product_name || "Producto manual"}
+                    </Typography>
+                    <Typography
+                      sx={{
+                        ...mono,
+                        fontSize: "0.66rem",
+                        color: "text.secondary",
+                        ml: 2.75,
+                      }}
+                    >
+                      {`@$${fmtMX(i.price_at_sale)} ${per ? per.per : "c/u"}`}
+                    </Typography>
+                  </Box>
+                  <Typography
+                    sx={{
+                      ...mono,
+                      fontSize: "0.78rem",
+                      fontWeight: 700,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    ${fmtMX(i.quantity * i.price_at_sale)}
+                  </Typography>
+                </Box>
+              );
+            })}
+          </Box>
+
+          <Box sx={{ ...dashed, mt: 0.5, pt: 1 }}>
+            <Box sx={{ display: "flex", justifyContent: "space-between" }}>
+              <Typography
+                sx={{ ...mono, fontSize: "0.74rem", color: "text.secondary" }}
+              >
+                Subtotal ({qtyTotal} art.)
+              </Typography>
+              <Typography
+                sx={{ ...mono, fontSize: "0.74rem", color: "text.secondary" }}
+              >
+                ${fmtMX(subtotal)}
+              </Typography>
+            </Box>
+            {Math.abs(adjust) > 0.005 && (
+              <Box sx={{ display: "flex", justifyContent: "space-between" }}>
+                <Typography
+                  sx={{ ...mono, fontSize: "0.74rem", color: adjustColor }}
+                >
+                  {adjust > 0 ? "Descuentos / Ajustes" : "Ajustes"}
+                </Typography>
+                <Typography
+                  sx={{ ...mono, fontSize: "0.74rem", color: adjustColor }}
+                >
+                  {adjust > 0 ? "-" : "+"}${fmtMX(Math.abs(adjust))}
+                </Typography>
+              </Box>
+            )}
+            <Box
+              sx={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "baseline",
+                mt: 0.75,
+                pt: 0.75,
+                ...dashed,
+              }}
+            >
+              <Typography
+                sx={{
+                  ...mono,
+                  fontWeight: 800,
+                  fontSize: "0.8rem",
+                  letterSpacing: "0.08em",
+                }}
+              >
+                TOTAL
+              </Typography>
+              <Typography
+                sx={{
+                  ...mono,
+                  fontWeight: 800,
+                  fontSize: "1.05rem",
+                  textDecoration: cancelled ? "line-through" : "none",
+                }}
+              >
+                ${fmtMX(total)}
+              </Typography>
+            </Box>
+          </Box>
+
+          {cancelled && (
+            <Box sx={{ textAlign: "center", mt: 1 }}>
+              <Chip
+                label="VENTA CANCELADA"
+                size="small"
+                sx={{
+                  bgcolor: "rgba(239,68,68,0.15)",
+                  color: "#ef4444",
+                  fontWeight: 800,
+                  fontSize: "0.62rem",
+                  borderRadius: "4px",
+                  border: "1px solid rgba(239,68,68,0.4)",
+                }}
+              />
+            </Box>
+          )}
+        </Box>
+      </Box>
     );
   };
 
@@ -1153,6 +1417,7 @@ const RegisterHistory = () => {
                             "Tipo",
                             "Método",
                             "Monto",
+                            "Nota",
                             ...(isAdmin ? ["Acción"] : []),
                           ].map((h, i) => (
                             <TableCell
@@ -1160,7 +1425,7 @@ const RegisterHistory = () => {
                               align={
                                 h === "Monto"
                                   ? "right"
-                                  : h === "Acción"
+                                  : h === "Acción" || h === "Nota"
                                     ? "center"
                                     : "left"
                               }
@@ -1206,7 +1471,7 @@ const RegisterHistory = () => {
                           })),
                         ]
                           .sort((a, b) => new Date(b.time) - new Date(a.time))
-                          .map((item, idx) => (
+                          .map((item, idx) => [
                             <TableRow
                               key={item.id}
                               hover
@@ -1331,6 +1596,55 @@ const RegisterHistory = () => {
                                 {Math.abs(item.amount).toFixed(2)}
                               </TableCell>
 
+                              <TableCell align="center" sx={{ py: 0.5 }}>
+                                {item.type === "sale" ? (
+                                  <Tooltip
+                                    title={
+                                      expandedSaleId === item.saleId
+                                        ? "Ocultar productos"
+                                        : "Ver productos de la venta"
+                                    }
+                                  >
+                                    <IconButton
+                                      size="small"
+                                      onClick={() =>
+                                        setExpandedSaleId((prev) =>
+                                          prev === item.saleId
+                                            ? null
+                                            : item.saleId,
+                                        )
+                                      }
+                                      sx={{
+                                        p: 0.4,
+                                        px: 0.6,
+                                        minWidth: 0,
+                                        height: 28,
+                                        border: "1px solid",
+                                        borderColor:
+                                          expandedSaleId === item.saleId
+                                            ? "primary.main"
+                                            : "divider",
+                                        borderRadius: "4px",
+                                        color:
+                                          expandedSaleId === item.saleId
+                                            ? "primary.main"
+                                            : "text.secondary",
+                                      }}
+                                    >
+                                      <Receipt size={14} />
+                                    </IconButton>
+                                  </Tooltip>
+                                ) : (
+                                  <Typography
+                                    variant="caption"
+                                    color="textSecondary"
+                                    sx={{ fontSize: "0.7rem" }}
+                                  >
+                                    —
+                                  </Typography>
+                                )}
+                              </TableCell>
+
                               {isAdmin && (
                                 <TableCell align="center">
                                   {item.type === "sale" &&
@@ -1378,13 +1692,38 @@ const RegisterHistory = () => {
                                     )}
                                 </TableCell>
                               )}
-                            </TableRow>
-                          ))}
+                            </TableRow>,
+                            item.type === "sale" &&
+                              expandedSaleId === item.saleId && (
+                                <TableRow
+                                  key={`${item.id}-receipt`}
+                                  sx={{
+                                    bgcolor: isDark
+                                      ? "rgba(255,255,255,0.03)"
+                                      : "#f8fafc",
+                                  }}
+                                >
+                                  <TableCell
+                                    colSpan={isAdmin ? 7 : 6}
+                                    sx={{
+                                      py: 1.75,
+                                      borderBottom: "1px dashed",
+                                      borderColor: "divider",
+                                    }}
+                                  >
+                                    <SaleReceipt
+                                      sale={item}
+                                      items={itemsBySale[item.saleId] || []}
+                                    />
+                                  </TableCell>
+                                </TableRow>
+                              ),
+                          ])}
                         {detail.sales.length === 0 &&
                           detail.expenses.length === 0 && (
                             <TableRow>
                               <TableCell
-                                colSpan={isAdmin ? 6 : 5}
+                                colSpan={isAdmin ? 7 : 6}
                                 align="center"
                               >
                                 <Typography

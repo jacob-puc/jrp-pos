@@ -127,36 +127,61 @@ const Inventory = () => {
   const pageSize = isFiltered ? PAGE_SIZE : rowsPerPage;
   const scanBufferRef = useRef("");
   const scanTimeoutRef = useRef(null);
+  const processingScanRef = useRef(false);
   const [initialBarcode, setInitialBarcode] = useState("");
+
+  const isAnyModalOpen =
+    isModalOpen ||
+    editModalOpen ||
+    stockModalOpen ||
+    reduceModalOpen ||
+    deleteConfirmOpen ||
+    viewDetailsOpen ||
+    costConfirmOpen;
+  const isAnyModalOpenRef = useRef(false);
+  isAnyModalOpenRef.current = isAnyModalOpen;
 
   const fetchProducts = useCallback(async () => {
     setLoading(true);
-    const [result, cats, sups] = await Promise.all([
-      window.api.invoke("get-products", {
-        search: debouncedSearch || undefined,
-        category_id: selectedCategory || undefined,
-        supplier_id: selectedSupplier || undefined,
-        sortField,
-        sortDir,
-        page,
-        rowsPerPage: pageSize,
-      }),
-      window.api.invoke("get-categories"),
-      window.api.invoke("get-suppliers"),
-    ]);
-    setProducts(result.products);
-    setTotal(result.total);
-    setStats(
-      result.stats || {
+    try {
+      const [result, cats, sups] = await Promise.all([
+        window.api.invoke("get-products", {
+          search: debouncedSearch || undefined,
+          category_id: selectedCategory || undefined,
+          supplier_id: selectedSupplier || undefined,
+          sortField,
+          sortDir,
+          page,
+          rowsPerPage: pageSize,
+        }),
+        window.api.invoke("get-categories"),
+        window.api.invoke("get-suppliers"),
+      ]);
+      setProducts(result?.products || []);
+      setTotal(result?.total || 0);
+      setStats(
+        result?.stats || {
+          totalCount: 0,
+          totalValue: 0,
+          lowStockCount: 0,
+          discountedCount: 0,
+        },
+      );
+      setCategories(cats || []);
+      setSuppliers(sups || []);
+    } catch (err) {
+      console.error("Error in fetchProducts:", err);
+      setProducts([]);
+      setTotal(0);
+      setStats({
         totalCount: 0,
         totalValue: 0,
         lowStockCount: 0,
         discountedCount: 0,
-      },
-    );
-    setCategories(cats || []);
-    setSuppliers(sups || []);
-    setLoading(false);
+      });
+    } finally {
+      setLoading(false);
+    }
   }, [
     debouncedSearch,
     selectedCategory,
@@ -165,6 +190,7 @@ const Inventory = () => {
     sortDir,
     page,
     rowsPerPage,
+    pageSize,
   ]);
 
   useEffect(() => {
@@ -191,26 +217,41 @@ const Inventory = () => {
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.ctrlKey || e.altKey || e.metaKey) return;
-      if (document.activeElement?.tagName === "INPUT") return;
+      if (
+        document.activeElement?.tagName === "INPUT" ||
+        document.activeElement?.tagName === "TEXTAREA" ||
+        document.activeElement?.tagName === "SELECT"
+      ) {
+        return;
+      }
+      if (isAnyModalOpenRef.current) return;
 
       if (e.key === "Enter") {
-        const code = scanBufferRef.current;
+        const code = scanBufferRef.current.trim();
         scanBufferRef.current = "";
         if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
         if (code.length >= 3) {
+          if (processingScanRef.current) return;
+          processingScanRef.current = true;
           (async () => {
-            const result = await window.api.invoke(
-              "get-product-by-barcode",
-              code,
-            );
-            if (result.success && result.product) {
-              setSelectedProduct(result.product);
-              setStockQuantity("");
-              setStockCost("");
-              setStockModalOpen(true);
-            } else {
-              setInitialBarcode(code);
-              setIsModalOpen(true);
+            try {
+              const result = await window.api.invoke(
+                "get-product-by-barcode",
+                code,
+              );
+              if (result && result.success && result.product) {
+                setSelectedProduct(result.product);
+                setStockQuantity("");
+                setStockCost("");
+                setStockModalOpen(true);
+              } else {
+                setInitialBarcode(code);
+                setIsModalOpen(true);
+              }
+            } catch (err) {
+              console.error("Error fetching product by barcode:", err);
+            } finally {
+              processingScanRef.current = false;
             }
           })();
         }
@@ -222,7 +263,7 @@ const Inventory = () => {
         if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
         scanTimeoutRef.current = setTimeout(() => {
           scanBufferRef.current = "";
-        }, 100);
+        }, 120);
       }
     };
     window.addEventListener("keydown", handleKeyDown);

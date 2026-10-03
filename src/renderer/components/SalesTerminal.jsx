@@ -68,24 +68,36 @@ const scanMove = keyframes`
   100% { left: -30%; }
 `;
 
+const safeNum = (v, def = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+};
+
+const fmtMoney = (v) => safeNum(v, 0).toFixed(2);
+const fmtKg = (v) => safeNum(v, 0).toFixed(3);
+
 const roundCash = (amount) => {
-  const base = Math.floor(amount);
-  const cents = Math.round((amount - base) * 100);
+  const a = safeNum(amount, 0);
+  const base = Math.floor(a);
+  const cents = Math.round((a - base) * 100);
   if (cents <= 29) return base;
   if (cents <= 79) return base + 0.5;
   return base + 1;
 };
 
-const calcFinalPrice = (price, discount) =>
-  price * (1 - (discount || 0) / 100);
+const calcFinalPrice = (price, discount) => {
+  const p = safeNum(price, 0);
+  const d = safeNum(discount, 0);
+  return p * (1 - d / 100);
+};
 
 const parseQtyPrefix = (str) => {
-  const m = /^(\d+)\*(.+)$/.exec(str);
+  const m = /^(\d+)\*(.+)$/.exec(String(str || ""));
   if (m) {
     const qty = parseInt(m[1], 10);
     return { qty: qty >= 1 ? qty : 1, rest: m[2].trim() };
   }
-  return { qty: null, rest: str };
+  return { qty: null, rest: String(str || "").trim() };
 };
 
 const inputSx = {
@@ -113,44 +125,61 @@ const FieldLabel = ({ children }) => (
 const PRESET_RECHARGES = [12, 22, 32, 52, 62, 100];
 
 const lineKeyOf = (item) =>
-  `${item.id}:${item.isWeightItem ? "w" : item.isBoxItem ? "b" : item.isPackItem ? "p" : "s"}`;
+  `${item?.id ?? "unknown"}:${item?.isWeightItem ? "w" : item?.isBoxItem ? "b" : item?.isPackItem ? "p" : "s"}`;
 
-const packPriceOf = (p) => (p.sale_unit === "boxpack" ? p.price : p.pack_price);
-const piecePriceOf = (p) => (p.sale_unit === "boxpack" ? p.pack_price : p.price);
+const packPriceOf = (p) => (p?.sale_unit === "boxpack" ? safeNum(p?.price) : safeNum(p?.pack_price));
+const piecePriceOf = (p) => (p?.sale_unit === "boxpack" ? safeNum(p?.pack_price) : safeNum(p?.price));
 
 const canManualDiscount = (i) =>
-  !!i.has_discount && i.discount_percent <= 0 && !(i.prices && i.prices.length > 0);
+  !!i?.has_discount && safeNum(i?.discount_percent) <= 0 && !(i?.prices && Array.isArray(i.prices) && i.prices.length > 0);
 
 const promoInfo = (it, qty) => {
-  const baseUnit = calcFinalPrice(it.price, it.discount_percent);
-  const baseTotal = baseUnit * qty;
+  const nQty = safeNum(qty, 1);
+  const baseUnit = calcFinalPrice(it?.price, it?.discount_percent);
+  const baseTotal = baseUnit * nQty;
   if (
+    !it ||
     it.isBoxItem ||
     it.isPackItem ||
     it.isWeightItem ||
     !it.prices ||
+    !Array.isArray(it.prices) ||
     it.prices.length === 0
   ) {
     return { total: baseTotal, unit: baseUnit, applied: null };
   }
   let best = { total: baseTotal, unit: baseUnit, applied: null };
   for (const e of it.prices) {
+    const eQty = parseInt(e?.qty, 10) || 0;
+    const ePrice = safeNum(e?.price, 0);
+    if (eQty <= 0 || ePrice <= 0) continue;
     let t;
     if (e.type === "mayoreo") {
-      if (qty < e.qty) continue;
-      t = qty * e.price;
+      if (nQty < eQty) continue;
+      t = nQty * ePrice;
     } else {
-      if (qty < e.qty) continue;
-      const combos = Math.floor(qty / e.qty);
-      const rest = qty % e.qty;
-      t = combos * e.price + rest * baseUnit;
+      if (nQty < eQty) continue;
+      const combos = Math.floor(nQty / eQty);
+      const rest = nQty % eQty;
+      t = combos * ePrice + rest * baseUnit;
     }
-    if (t < best.total - 1e-9) best = { total: t, unit: t / qty, applied: e };
+    if (t < best.total - 1e-9) {
+      best = { total: t, unit: nQty > 0 ? t / nQty : t, applied: e };
+    }
   }
   return best;
 };
-const lineTotal = (it, qty) => promoInfo(it, qty).total - (it.discount || 0);
-const lineUnitPrice = (it, qty) => (qty > 0 ? lineTotal(it, qty) / qty : 0);
+
+const lineTotal = (it, qty) => {
+  const nQty = safeNum(qty, 1);
+  const discount = safeNum(it?.discount, 0);
+  return Math.max(0, promoInfo(it, nQty).total - discount);
+};
+
+const lineUnitPrice = (it, qty) => {
+  const nQty = safeNum(qty, 1);
+  return nQty > 0 ? lineTotal(it, nQty) / nQty : 0;
+};
 
 const CartItem = React.memo(
   ({
@@ -166,6 +195,10 @@ const CartItem = React.memo(
     const isDark = theme.palette.mode === "dark";
     const promo = promoInfo(item, item.quantity).applied;
     const fp = lineUnitPrice(item, item.quantity);
+    const itemDiscount = safeNum(item.discount, 0);
+    const itemPrice = safeNum(item.price, 0);
+    const itemQty = safeNum(item.quantity, 1);
+
     return (
       <Paper
         elevation={0}
@@ -263,7 +296,7 @@ const CartItem = React.memo(
                     }}
                   />
                 )}
-              {item.discount_percent > 0 && (
+              {safeNum(item.discount_percent) > 0 && (
                 <Chip
                   label={`-${item.discount_percent}%`}
                   color="error"
@@ -271,9 +304,9 @@ const CartItem = React.memo(
                   sx={{ ml: 0.5, height: 18, fontSize: "0.6rem" }}
                 />
               )}
-              {item.discount > 0 && (
+              {itemDiscount > 0 && (
                 <Chip
-                  label={`-$${item.discount.toFixed(2)}`}
+                  label={`-$${fmtMoney(itemDiscount)}`}
                   color="error"
                   size="small"
                   sx={{ ml: 0.5, height: 18, fontSize: "0.6rem" }}
@@ -284,7 +317,7 @@ const CartItem = React.memo(
                   label={
                     promo.type === "mayoreo"
                       ? `Mayoreo desde ${promo.qty} pz`
-                      : `Oferta ${promo.qty}×$${promo.price.toFixed(2)}`
+                      : `Oferta ${promo.qty}×$${fmtMoney(promo.price)}`
                   }
                   color="secondary"
                   size="small"
@@ -297,15 +330,15 @@ const CartItem = React.memo(
               color="textSecondary"
               sx={{ fontSize: "0.85rem" }}
             >
-              {item.discount_percent > 0 || item.discount > 0 || promo ? (
+              {safeNum(item.discount_percent) > 0 || itemDiscount > 0 || promo ? (
                 <>
                   <span style={{ textDecoration: "line-through" }}>
-                    ${item.price.toFixed(2)}
+                    ${fmtMoney(itemPrice)}
                   </span>{" "}
-                  ${fp.toFixed(2)}
+                  ${fmtMoney(fp)}
                 </>
               ) : (
-                `$${item.price.toFixed(2)}`
+                `$${fmtMoney(itemPrice)}`
               )}{" "}
               {item.isWeightItem
                 ? "/ kg"
@@ -334,8 +367,8 @@ const CartItem = React.memo(
               }}
             >
               {item.isWeightItem
-                ? `${item.quantity.toFixed(3)}`
-                : item.quantity}
+                ? `${fmtKg(itemQty)}`
+                : itemQty}
             </Typography>
             <IconButton
               size="small"
@@ -355,7 +388,7 @@ const CartItem = React.memo(
               fontSize: "1.05rem",
             }}
           >
-            ${(fp * item.quantity).toFixed(2)}
+            ${fmtMoney(fp * itemQty)}
           </Typography>
           {canManualDiscount(item) && (
             <IconButton
@@ -364,9 +397,9 @@ const CartItem = React.memo(
               sx={{
                 width: 32,
                 height: 32,
-                color: item.discount > 0 ? "error.main" : "text.secondary",
+                color: itemDiscount > 0 ? "error.main" : "text.secondary",
                 bgcolor:
-                  item.discount > 0
+                  itemDiscount > 0
                     ? "rgba(239,68,68,0.1)"
                     : "transparent",
               }}
@@ -392,7 +425,26 @@ const SalesTerminal = () => {
   const { cashier } = useCashier();
   const navigate = useNavigate();
   const [barcode, setBarcode] = useState("");
-  const [cart, setCart] = useState([]);
+  // Caché del carrito en curso: si se va la luz a media venta, al volver
+  // el sistema restaura lo que aún no se había cobrado.
+  const [cart, setCart] = useState(() => {
+    try {
+      const raw = localStorage.getItem("pos_pending_cart");
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
+  useEffect(() => {
+    try {
+      if (cart.length > 0) {
+        localStorage.setItem("pos_pending_cart", JSON.stringify(cart));
+      } else {
+        localStorage.removeItem("pos_pending_cart");
+      }
+    } catch {}
+  }, [cart]);
   const [total, setTotal] = useState(0);
   const [subtotal, setSubtotal] = useState(0);
   const [notification, setNotification] = useState({
@@ -963,21 +1015,25 @@ if (e.key === "Tab" && !isEditable) {
     refocusBarcode();
   };
 
-  const committedStock = (product) =>
-    cart
-      .filter((it) => it.id === product.id)
+  const committedStockInCart = (items, product) =>
+    (items || [])
+      .filter((it) => it && it.id === product?.id)
       .reduce((sum, it) => {
-        if (it.isWeightItem) return sum + it.quantity;
-        if (it.isBoxItem) return sum + it.quantity * (it.box_qty || 1);
-        if (it.isPackItem) return sum + it.quantity * (it.pack_qty || 1);
-        return sum + it.quantity;
+        const q = safeNum(it.quantity, 0);
+        if (it.isWeightItem) return sum + q;
+        if (it.isBoxItem) return sum + q * (parseInt(it.box_qty, 10) || 1);
+        if (it.isPackItem) return sum + q * (parseInt(it.pack_qty, 10) || 1);
+        return sum + q;
       }, 0);
 
-  const addProductToCart = (product, qtyOverride) => {
+  const committedStock = (product) => committedStockInCart(cart, product);
+
+  const addProductToCart = useCallback((product, qtyOverride) => {
+    if (!product) return;
     checkRegisterOpen().then((open) => {
       if (!open) warnRegisterClosed();
     });
-    const qty = qtyOverride ?? pendingQty;
+    const qty = safeNum(qtyOverride ?? pendingQty, 1);
     if (product.sale_unit === "weight" && !product.isManual) {
       setPendingQty(1);
       setWeightAmount("");
@@ -985,7 +1041,7 @@ if (e.key === "Tab" && !isEditable) {
       return;
     }
     if (
-      (isContainerUnit(product.sale_unit) || product.pack_qty > 0) &&
+      (isContainerUnit(product.sale_unit) || safeNum(product.pack_qty) > 0) &&
       !product.isManual
     ) {
       setPendingQty(1);
@@ -996,185 +1052,242 @@ if (e.key === "Tab" && !isEditable) {
       product.price,
       product.discount_percent,
     );
-    const productWithDiscount = { ...product, finalPrice: effectivePrice };
+    const productWithDiscount = {
+      ...product,
+      price: safeNum(product.price, 0),
+      finalPrice: effectivePrice,
+      prices: Array.isArray(product.prices) ? product.prices : [],
+    };
 
     if (product.isManual) {
-      const existingIndex = cart.findIndex(
-        (item) => item.id === product.id || item.name === product.name,
-      );
+      setCart((prevCart) => {
+        const existingIndex = prevCart.findIndex(
+          (item) => item.id === product.id || item.name === product.name,
+        );
+        if (existingIndex !== -1) {
+          const updatedCart = [...prevCart];
+          updatedCart[existingIndex] = {
+            ...updatedCart[existingIndex],
+            quantity: safeNum(updatedCart[existingIndex].quantity, 0) + qty,
+          };
+          return updatedCart;
+        }
+        return [...prevCart, { ...productWithDiscount, quantity: qty }];
+      });
+      if (qty !== 1) setPendingQty(1);
+      clearSearch();
+      showNotification(`${product.name} agregado al carrito`, "success");
+      return;
+    }
+
+    const prodStock = safeNum(product.stock, 0);
+    if (prodStock <= 0) {
+      showNotification("Producto sin stock", "error");
+      refocusBarcode();
+      return;
+    }
+
+    let addedSuccessfully = false;
+    let stockError = false;
+
+    setCart((prevCart) => {
+      const currentCommitted = committedStockInCart(prevCart, product);
+      if (prodStock - currentCommitted < 1) {
+        stockError = true;
+        return prevCart;
+      }
+      addedSuccessfully = true;
+      const existingIndex = prevCart.findIndex((item) => item.id === product.id);
       if (existingIndex !== -1) {
-        const updatedCart = [...cart];
+        const updatedCart = [...prevCart];
         updatedCart[existingIndex] = {
           ...updatedCart[existingIndex],
-          quantity: updatedCart[existingIndex].quantity + qty,
+          quantity: safeNum(updatedCart[existingIndex].quantity, 0) + qty,
         };
-        setCart(updatedCart);
-      } else {
-        setCart([...cart, { ...productWithDiscount, quantity: qty }]);
+        return updatedCart;
       }
-      if (qty !== 1) setPendingQty(1);
-      clearSearch();
-      showNotification(`${product.name} agregado al carrito`, "success");
-      return;
-    }
-    if (product.stock <= 0) {
-      showNotification("Producto sin stock", "error");
-      return;
-    }
-    if (product.stock - committedStock(product) < 1) {
+      return [...prevCart, { ...productWithDiscount, quantity: qty }];
+    });
+
+    if (stockError) {
       showNotification("Stock insuficiente", "warning");
-      return;
-    }
-    const existingIndex = cart.findIndex((item) => item.id === product.id);
-    if (existingIndex !== -1) {
-      const updatedCart = [...cart];
-      updatedCart[existingIndex] = {
-        ...updatedCart[existingIndex],
-        quantity: updatedCart[existingIndex].quantity + qty,
-      };
-      setCart(updatedCart);
+    } else if (addedSuccessfully) {
       if (qty !== 1) setPendingQty(1);
-      clearSearch();
-      showNotification(`${product.name} agregado al carrito`, "success");
-    } else {
-      setCart([...cart, { ...productWithDiscount, quantity: qty }]);
-      if (qty !== 1) setPendingQty(1);
-      clearSearch();
       showNotification(`${product.name} agregado al carrito`, "success");
     }
-  };
+    clearSearch();
+  }, [pendingQty, showNotification]);
 
   const confirmWeightProduct = () => {
     const { product } = weightDialog;
+    if (!product) return;
     const kg = parseFloat(weightAmount) || 0;
     if (kg <= 0) return;
-    if (product.stock - committedStock(product) < kg) {
-      setWeightDialog({ open: false, product: null });
-      setWeightAmount("");
-      refocusBarcode();
-      showNotification("Stock insuficiente", "warning");
-      return;
-    }
-    const effectivePrice = calcFinalPrice(
-      product.price,
-      product.discount_percent,
-    );
-    const productWithWeight = {
-      ...product,
-      finalPrice: effectivePrice,
-      quantity: kg,
-      isWeightItem: true,
-    };
-    const existingIndex = cart.findIndex(
-      (item) => item.id === product.id && item.isWeightItem,
-    );
-    if (existingIndex !== -1) {
-      const updatedCart = [...cart];
-      updatedCart[existingIndex] = {
-        ...updatedCart[existingIndex],
-        quantity: updatedCart[existingIndex].quantity + kg,
+    const prodStock = safeNum(product.stock, 0);
+
+    let stockError = false;
+    let added = false;
+
+    setCart((prevCart) => {
+      const currentCommitted = committedStockInCart(prevCart, product);
+      if (prodStock - currentCommitted < kg) {
+        stockError = true;
+        return prevCart;
+      }
+      added = true;
+      const effectivePrice = calcFinalPrice(
+        product.price,
+        product.discount_percent,
+      );
+      const productWithWeight = {
+        ...product,
+        price: safeNum(product.price, 0),
+        finalPrice: effectivePrice,
+        quantity: kg,
+        isWeightItem: true,
       };
-      setCart(updatedCart);
-    } else {
-      setCart([...cart, productWithWeight]);
-    }
+      const existingIndex = prevCart.findIndex(
+        (item) => item.id === product.id && item.isWeightItem,
+      );
+      if (existingIndex !== -1) {
+        const updatedCart = [...prevCart];
+        updatedCart[existingIndex] = {
+          ...updatedCart[existingIndex],
+          quantity: safeNum(updatedCart[existingIndex].quantity, 0) + kg,
+        };
+        return updatedCart;
+      }
+      return [...prevCart, productWithWeight];
+    });
+
     setWeightDialog({ open: false, product: null });
     setWeightAmount("");
     clearSearch();
-    showNotification(
-      `${kg.toFixed(3)} kg de ${product.name} agregado`,
-      "success",
-    );
+    if (stockError) {
+      showNotification("Stock insuficiente", "warning");
+    } else if (added) {
+      showNotification(
+        `${kg.toFixed(3)} kg de ${product.name} agregado`,
+        "success",
+      );
+    }
   };
 
   const confirmBoxChoice = (choice) => {
     const { product, qty = 1 } = boxChoiceDialog;
+    if (!product) return;
     const isBox = choice === "box";
     const isPack = choice === "pack";
     const containerNoun =
       unitLabels(product.sale_unit)?.containerNoun || "Caja";
     const needPieces = isBox
-      ? product.box_qty || 1
+      ? parseInt(product.box_qty, 10) || 1
       : isPack
-        ? product.pack_qty || 1
+        ? parseInt(product.pack_qty, 10) || 1
         : 1;
-    if (product.stock - committedStock(product) < needPieces * qty) {
-      setBoxChoiceDialog({ open: false, product: null });
-      refocusBarcode();
-      showNotification("Stock insuficiente", "warning");
-      return;
-    }
-    const unitPrice = isBox
-      ? product.box_price
-      : isPack
-        ? packPriceOf(product)
-        : piecePriceOf(product);
-    const effectivePrice = calcFinalPrice(unitPrice, product.discount_percent);
-    const item = {
-      ...product,
-      finalPrice: effectivePrice,
-      quantity: qty,
-      isBoxItem: isBox,
-      isPackItem: isPack,
-      price: unitPrice,
-      prices: product.prices || [],
-    };
-    const existingIndex = cart.findIndex(
-      (i) =>
-        i.id === product.id &&
-        i.isBoxItem === isBox &&
-        i.isPackItem === isPack,
-    );
-    if (existingIndex !== -1) {
-      const updated = [...cart];
-      updated[existingIndex] = {
-        ...updated[existingIndex],
-        quantity: updated[existingIndex].quantity + qty,
+    const totalPieces = needPieces * qty;
+    const prodStock = safeNum(product.stock, 0);
+
+    let stockError = false;
+    let added = false;
+
+    setCart((prevCart) => {
+      const currentCommitted = committedStockInCart(prevCart, product);
+      if (prodStock - currentCommitted < totalPieces) {
+        stockError = true;
+        return prevCart;
+      }
+      added = true;
+      const unitPrice = isBox
+        ? safeNum(product.box_price)
+        : isPack
+          ? packPriceOf(product)
+          : piecePriceOf(product);
+      const effectivePrice = calcFinalPrice(unitPrice, product.discount_percent);
+      const item = {
+        ...product,
+        finalPrice: effectivePrice,
+        quantity: qty,
+        isBoxItem: isBox,
+        isPackItem: isPack,
+        price: unitPrice,
+        prices: Array.isArray(product.prices) ? product.prices : [],
       };
-      setCart(updated);
-    } else {
-      setCart([...cart, item]);
-    }
+      const existingIndex = prevCart.findIndex(
+        (i) =>
+          i.id === product.id &&
+          i.isBoxItem === isBox &&
+          i.isPackItem === isPack,
+      );
+      if (existingIndex !== -1) {
+        const updated = [...prevCart];
+        updated[existingIndex] = {
+          ...updated[existingIndex],
+          quantity: safeNum(updated[existingIndex].quantity, 0) + qty,
+        };
+        return updated;
+      }
+      return [...prevCart, item];
+    });
+
     setBoxChoiceDialog({ open: false, product: null });
     clearSearch();
-    showNotification(
-      `${isBox ? containerNoun : isPack ? "Paquete" : "Pieza"} de ${product.name} agregado`,
-      "success",
-    );
+    if (stockError) {
+      showNotification("Stock insuficiente", "warning");
+    } else if (added) {
+      showNotification(
+        `${isBox ? containerNoun : isPack ? "Paquete" : "Pieza"} de ${product.name} agregado`,
+        "success",
+      );
+    }
   };
 
   const handleBarcodeSubmit = async (event) => {
-    const rawValue = event.target?.value ?? barcode;
-    const trimmedValue = rawValue.trim();
-    if (event.key === "Enter" && trimmedValue !== "") {
+    if (event.key === "Enter") {
       event.preventDefault();
+      const rawValue = event.target?.value ?? barcode;
+      const trimmedValue = String(rawValue || "").trim();
+
+      // Immediately clear barcode state & input DOM to avoid corrupting subsequent scanner strokes
+      setBarcode("");
+      if (event.target) event.target.value = "";
+      clearTimeout(searchTimeoutRef.current);
       setShowSuggestions(false);
+      const prevSuggestionIdx = selectedSuggestionIndex;
+      setSelectedSuggestionIndex(-1);
+
+      if (!trimmedValue) return;
+
       const { qty, rest } = parseQtyPrefix(trimmedValue);
       if (rest === "") {
-        setBarcode("");
-        setSelectedSuggestionIndex(-1);
         showNotification("Producto no encontrado", "error");
         return;
       }
+
       if (
-        selectedSuggestionIndex >= 0 &&
-        searchResults[selectedSuggestionIndex]
+        prevSuggestionIdx >= 0 &&
+        searchResults[prevSuggestionIdx]
       ) {
-        addProductToCart(searchResults[selectedSuggestionIndex], qty ?? undefined);
+        addProductToCart(searchResults[prevSuggestionIdx], qty ?? undefined);
         return;
       }
-      const { success, product } = await window.api.invoke(
-        "get-product-by-barcode",
-        rest,
-      );
-      if (success && product) {
-        addProductToCart(product, qty ?? undefined);
-      } else if (qty && searchResults.length > 0) {
-        addProductToCart(searchResults[0], qty);
-      } else {
-        setBarcode("");
-        setSelectedSuggestionIndex(-1);
-        showNotification("Producto no encontrado", "error");
+
+      try {
+        const res = await window.api.invoke("get-product-by-barcode", rest);
+        if (res && res.success && res.product) {
+          addProductToCart(res.product, qty ?? undefined);
+        } else {
+          // Fallback: search by query if not exact barcode match
+          const searchList = await window.api.invoke("search-products", rest);
+          if (Array.isArray(searchList) && searchList.length > 0) {
+            addProductToCart(searchList[0], qty ?? undefined);
+          } else {
+            showNotification("Producto no encontrado", "error");
+          }
+        }
+      } catch (err) {
+        console.error("Error searching barcode:", err);
+        showNotification("Error al buscar producto", "error");
       }
     } else if (event.key === "ArrowDown") {
       event.preventDefault();
@@ -1398,29 +1511,29 @@ if (e.key === "Tab" && !isEditable) {
             ? "pq"
             : "pza";
       const qtyDisplay = item.isWeightItem
-        ? item.quantity.toFixed(3)
+        ? fmtKg(item.quantity)
         : item.quantity;
       const name =
         item.name.length > 24 ? item.name.substring(0, 22) + ".." : item.name;
       lines.push(`<div style="font-weight:bold;font-size:12px">${name}</div>`);
       lines.push(
-        `<div style="display:flex;justify-content:space-between;font-size:10px"><span>${qtyDisplay} ${unit} x $${fp.toFixed(2)}</span><span>$${lt.toFixed(2)}</span></div>`,
+        `<div style="display:flex;justify-content:space-between;font-size:10px"><span>${qtyDisplay} ${unit} x $${fmtMoney(fp)}</span><span>$${fmtMoney(lt)}</span></div>`,
       );
       if (promo)
         lines.push(
           `<div style="text-align:center;font-size:10px;color:purple">${
             promo.type === "mayoreo"
               ? `Mayoreo desde ${promo.qty} pz`
-              : `Oferta ${promo.qty} x $${promo.price.toFixed(2)}`
+              : `Oferta ${promo.qty} x $${fmtMoney(promo.price)}`
           }</div>`,
         );
-      if (item.discount_percent > 0)
+      if (safeNum(item.discount_percent) > 0)
         lines.push(
           `<div style="text-align:center;font-size:10px;color:red">Descuento: -${item.discount_percent}%</div>`,
         );
-      if (item.discount > 0)
+      if (safeNum(item.discount) > 0)
         lines.push(
-          `<div style="text-align:center;font-size:10px;color:red">Descuento: -$${item.discount.toFixed(2)}</div>`,
+          `<div style="text-align:center;font-size:10px;color:red">Descuento: -$${fmtMoney(item.discount)}</div>`,
         );
       lines.push(
         `<div style="border-bottom:1px dotted #ccc;margin:3px 0"></div>`,
@@ -1433,22 +1546,22 @@ if (e.key === "Tab" && !isEditable) {
     const effTotal = method === "cash" ? roundCash(total) : total;
     const effDiscount = effSubtotal - effTotal;
     lines.push(
-      `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Subtotal:</span><span>$${effSubtotal.toFixed(2)}</span></div>`,
+      `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Subtotal:</span><span>$${fmtMoney(effSubtotal)}</span></div>`,
     );
     if (
       cart.some(
         (i) =>
-          i.discount_percent > 0 ||
-          i.discount > 0 ||
+          safeNum(i.discount_percent) > 0 ||
+          safeNum(i.discount) > 0 ||
           promoInfo(i, i.quantity).applied,
       )
     )
       lines.push(
-        `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Descuentos:</span><span>-$${effDiscount.toFixed(2)}</span></div>`,
+        `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Descuentos:</span><span>-$${fmtMoney(effDiscount)}</span></div>`,
       );
     lines.push(`<div class="sep"></div>`);
     lines.push(
-      `<div style="display:flex;justify-content:space-between;font-weight:bold;font-size:14px"><span>TOTAL:</span><span>$${effTotal.toFixed(2)}</span></div>`,
+      `<div style="display:flex;justify-content:space-between;font-weight:bold;font-size:14px"><span>TOTAL:</span><span>$${fmtMoney(effTotal)}</span></div>`,
     );
     lines.push(`<div class="sep"></div>`);
     const metodo =
@@ -1462,10 +1575,10 @@ if (e.key === "Tab" && !isEditable) {
     );
     if (method === "cash") {
       lines.push(
-        `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Recibido:</span><span>$${parseFloat(cashAmount).toFixed(2)}</span></div>`,
+        `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Recibido:</span><span>$${fmtMoney(cashAmount)}</span></div>`,
       );
       lines.push(
-        `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Cambio:</span><span>$${change.toFixed(2)}</span></div>`,
+        `<div style="display:flex;justify-content:space-between;font-size:11px"><span>Cambio:</span><span>$${fmtMoney(change)}</span></div>`,
       );
     }
     lines.push(`<div class="sep"></div>`);
@@ -2262,9 +2375,9 @@ display: "flex",
                   sx={{ mt: 0.5 }}
                 >
                   Precio:{" "}
-                  <strong>${weightDialog.product.price.toFixed(2)} / kg</strong>
+                  <strong>${fmtMoney(weightDialog.product.price)} / kg</strong>
                 </Typography>
-                {weightDialog.product.discount_percent > 0 && (
+                {safeNum(weightDialog.product.discount_percent) > 0 && (
                   <Chip
                     label={`-${weightDialog.product.discount_percent}%`}
                     color="error"
@@ -2307,18 +2420,18 @@ display: "flex",
                     sx={{ fontWeight: 800, color: theme.palette.success.main }}
                   >
                     $
-                    {(
-                      (weightDialog.product.discount_percent > 0
+                    {fmtMoney(
+                      (safeNum(weightDialog.product.discount_percent) > 0
                         ? calcFinalPrice(
                             weightDialog.product.price,
                             weightDialog.product.discount_percent,
                           )
-                        : weightDialog.product.price) * parseFloat(weightAmount)
-                    ).toFixed(2)}
+                        : safeNum(weightDialog.product.price)) * parseFloat(weightAmount)
+                    )}
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    ${weightDialog.product.price.toFixed(2)} ×{" "}
-                    {parseFloat(weightAmount).toFixed(3)} kg
+                    ${fmtMoney(weightDialog.product.price)} ×{" "}
+                    {fmtKg(weightAmount)} kg
                   </Typography>
                 </Box>
               )}
@@ -2407,7 +2520,7 @@ display: "flex",
               >
                 <Typography variant="caption" color="text.secondary">
                   Subtotal: $
-                  {(discountDialog.item.price * discountDialog.item.quantity).toFixed(2)}
+                  {fmtMoney(safeNum(discountDialog.item.price) * safeNum(discountDialog.item.quantity, 1))}
                 </Typography>
                 <Typography
                   variant="caption"
@@ -2421,13 +2534,13 @@ display: "flex",
                   sx={{ fontWeight: 800, color: theme.palette.success.main }}
                 >
                   $
-                  {(
-                    discountDialog.item.price * discountDialog.item.quantity -
+                  {fmtMoney(
+                    safeNum(discountDialog.item.price) * safeNum(discountDialog.item.quantity, 1) -
                     Math.min(
                       Math.max(parseFloat(discountValue) || 0, 0),
-                      discountDialog.item.price * discountDialog.item.quantity,
+                      safeNum(discountDialog.item.price) * safeNum(discountDialog.item.quantity, 1),
                     )
-                  ).toFixed(2)}
+                  )}
                 </Typography>
               </Box>
             </Box>
@@ -2435,7 +2548,7 @@ display: "flex",
         </DialogContent>
         <DialogActions sx={{ p: 2.5, justifyContent: "space-between" }}>
           <Box>
-            {discountDialog.item?.discount > 0 && (
+            {safeNum(discountDialog.item?.discount) > 0 && (
               <Button
                 onClick={() => {
                   clearDiscount(discountDialog.item);
@@ -2462,7 +2575,7 @@ display: "flex",
                 !discountValue ||
                 parseFloat(discountValue) <= 0 ||
                 parseFloat(discountValue) >
-                  discountDialog.item.price * discountDialog.item.quantity
+                  safeNum(discountDialog.item.price) * safeNum(discountDialog.item.quantity, 1)
               }
             >
               Aplicar
@@ -2519,7 +2632,7 @@ display: "flex",
                 >
                   {boxChoiceDialog.product.box_qty > 0 && (
                     <Chip
-                      label={`${unitLabels(boxChoiceDialog.product.sale_unit)?.containerNoun || "Caja"}: $${boxChoiceDialog.product.box_price?.toFixed(2)}`}
+                      label={`${unitLabels(boxChoiceDialog.product.sale_unit)?.containerNoun || "Caja"}: $${fmtMoney(boxChoiceDialog.product.box_price)}`}
                       variant="outlined"
                       size="small"
                       color="primary"
@@ -2528,14 +2641,14 @@ display: "flex",
                   {boxChoiceDialog.product.sale_unit === "boxpack" &&
                   boxChoiceDialog.product.pack_qty > 0 && (
                     <Chip
-                      label={`Paquete: $${packPriceOf(boxChoiceDialog.product)?.toFixed(2)}`}
+                      label={`Paquete: $${fmtMoney(packPriceOf(boxChoiceDialog.product))}`}
                       variant="outlined"
                       size="small"
                       color="secondary"
                     />
                   )}
                   <Chip
-                    label={`Pieza: $${piecePriceOf(boxChoiceDialog.product).toFixed(2)}`}
+                    label={`Pieza: $${fmtMoney(piecePriceOf(boxChoiceDialog.product))}`}
                     variant="outlined"
                     size="small"
                   />
@@ -2587,7 +2700,7 @@ display: "flex",
                         variant="caption"
                         sx={{ fontWeight: 400, opacity: 0.7 }}
                       >
-                        ${boxChoiceDialog.product.box_price?.toFixed(2)}
+                        ${fmtMoney(boxChoiceDialog.product.box_price)}
                       </Typography>
                     </Stack>
                   </Button>
@@ -2613,7 +2726,7 @@ display: "flex",
                         variant="caption"
                         sx={{ fontWeight: 400, opacity: 0.7 }}
                       >
-                        ${packPriceOf(boxChoiceDialog.product)?.toFixed(2)}
+                        ${fmtMoney(packPriceOf(boxChoiceDialog.product))}
                       </Typography>
                     </Stack>
                   </Button>
@@ -2631,7 +2744,7 @@ display: "flex",
                       variant="caption"
                       sx={{ fontWeight: 400, opacity: 0.7 }}
                     >
-                      ${piecePriceOf(boxChoiceDialog.product).toFixed(2)}
+                      ${fmtMoney(piecePriceOf(boxChoiceDialog.product))}
                     </Typography>
                   </Stack>
                 </Button>

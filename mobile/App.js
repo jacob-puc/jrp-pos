@@ -22,6 +22,8 @@ import LoginScreen from "./src/screens/LoginScreen";
 import ConnectingScreen from "./src/screens/ConnectingScreen";
 import { logout } from "./src/services/api";
 
+import SettingsScreen from "./src/screens/SettingsScreen";
+
 const Tab = createBottomTabNavigator();
 
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
@@ -31,7 +33,7 @@ const AppIcon = ({ name, size, color }) => (
   <MaterialCommunityIcons name={name} size={size} color={color} />
 );
 
-const MainTabs = ({ cashier }) => {
+const MainTabs = ({ cashier, onLogout }) => {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const tabBarHeight = 58 + Math.max(insets.bottom, 6);
@@ -70,6 +72,15 @@ const MainTabs = ({ cashier }) => {
         }}
       >
         {() => <ManualScreen cashier={cashier} />}
+      </Tab.Screen>
+      <Tab.Screen
+        name="Settings"
+        options={{
+          title: "Ajustes",
+          tabBarIcon: ({ color, size }) => <AppIcon name="cog-outline" size={size} color={color} />,
+        }}
+      >
+        {() => <SettingsScreen cashier={cashier} onLogout={onLogout} />}
       </Tab.Screen>
     </Tab.Navigator>
   );
@@ -169,7 +180,7 @@ export default function App() {
       case "login":
         return <LoginScreen onLogin={(c) => { setCashier(c); setScreen("main"); }} />;
       case "main":
-        return <MainTabs cashier={cashier} />;
+        return <MainTabs cashier={cashier} onLogout={logoutToLogin} />;
       default:
         return null;
     }

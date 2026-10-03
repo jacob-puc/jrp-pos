@@ -21,6 +21,29 @@ const dbPath = path.join(dbDir, "pos-system.db");
 let db = new Database(dbPath);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
+// Durabilidad ante cortes de luz: cada transacción se escribe a disco
+// antes de confirmar. Con WAL + FULL, una venta cobrada nunca se pierde
+// aunque se vaya la luz a media jornada.
+try {
+  db.pragma("synchronous = FULL");
+} catch (e) {}
+
+// ─── Bandera de apagado limpio ──────────────────────────────────
+// '1' = última sesión cerró bien, '0' = quedó corriendo (corte de luz /
+// crash / matar proceso). Se lee al arrancar para saber si hubo un
+// apagón y se marca '0' hasta el before-quit donde se pone '1'.
+let wasUncleanShutdown = false;
+try {
+  const flagRow = db
+    .prepare("SELECT value FROM settings WHERE key = 'app_clean_shutdown'")
+    .get();
+  wasUncleanShutdown = !!flagRow && flagRow.value === "0";
+} catch (e) {}
+try {
+  db.prepare(
+    "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_clean_shutdown', '0')",
+  ).run();
+} catch (e) {}
 
 const nomarize = (s) =>
   (s == null ? "" : String(s))
@@ -185,11 +208,14 @@ const createTables = () => {
   }
   ensureColumn("sales", "cancelled_at", "DATETIME");
   ensureColumn("sales", "cancelled_by", "TEXT");
+  // Ensure stock_deducted exists BEFORE the rebuild below (older DBs lack it)
+  ensureColumn("sale_items", "stock_deducted", "REAL DEFAULT 0");
   // Make product_id nullable (recreate table) using a fresh PRAGMA check
   const siColsFresh = db.prepare("PRAGMA table_info(sale_items)").all();
   const pcol = siColsFresh.find((c) => c.name === "product_id");
   if (pcol && pcol.notnull === 1) {
     db.pragma("foreign_keys = OFF");
+    db.exec(`DROP TABLE IF EXISTS sale_items_v2`);
     db.exec(`
       CREATE TABLE sale_items_v2 (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -586,6 +612,16 @@ app.on("ready", () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  try {
+    // Marca apagado limpio + fuerza WAL checkpoint para que todo quede
+    // consolidado en el .db antes de salir.
+    db.prepare(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('app_clean_shutdown', '1')",
+    ).run();
+    try {
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch (e) {}
+  } catch (e) {}
   destroyDrawerWorker();
   apiServer.stopServer();
   discovery.stopDiscovery();
@@ -631,147 +667,187 @@ const savePrices = (productId, prices) => {
 };
 
 const attachPrices = (products) => {
-  if (!products || !products.length) return products;
-  const rows = db
-    .prepare(
-      `SELECT product_id, type, qty, price FROM product_prices WHERE product_id IN (${products.map(() => "?").join(",")}) ORDER BY product_id, qty`,
-    )
-    .all(...products.map((p) => p.id));
-  const map = {};
-  for (const r of rows) {
-    (map[r.product_id] = map[r.product_id] || []).push({
-      type: r.type,
-      qty: r.qty,
-      price: r.price,
-    });
+  if (!products || !products.length) return products || [];
+  try {
+    const validProducts = products.filter((p) => p && p.id != null);
+    if (!validProducts.length) return products;
+    const rows = db
+      .prepare(
+        `SELECT product_id, type, qty, price FROM product_prices WHERE product_id IN (${validProducts.map(() => "?").join(",")}) ORDER BY product_id, qty`,
+      )
+      .all(...validProducts.map((p) => p.id));
+    const map = {};
+    for (const r of rows) {
+      (map[r.product_id] = map[r.product_id] || []).push({
+        type: r.type,
+        qty: Number(r.qty) || 1,
+        price: Number(r.price) || 0,
+      });
+    }
+    for (const p of products) {
+      if (p) p.prices = map[p.id] || [];
+    }
+  } catch (e) {
+    console.error("Error in attachPrices:", e);
+    for (const p of products) {
+      if (p && !p.prices) p.prices = [];
+    }
   }
-  for (const p of products) p.prices = map[p.id] || [];
   return products;
 };
 
 const attachDaySummary = (products) => {
-  if (!products || !products.length) return products;
-  const ids = products.map((p) => p.id);
-  const placeholders = ids.map(() => "?").join(",");
-  const { start, end } = toUTCDateRange(mxToday());
+  if (!products || !products.length) return products || [];
+  try {
+    const validProducts = products.filter((p) => p && p.id != null);
+    if (!validProducts.length) return products;
+    const ids = validProducts.map((p) => p.id);
+    const placeholders = ids.map(() => "?").join(",");
+    const { start, end } = toUTCDateRange(mxToday());
 
-  const movRows = db
-    .prepare(
-      `SELECT product_id, type, SUM(quantity) as qty
-       FROM stock_movements
-       WHERE product_id IN (${placeholders}) AND created_at >= ? AND created_at < ?
-       GROUP BY product_id, type`,
-    )
-    .all(...ids, start, end);
-  const saleRows = db
-    .prepare(
-      `SELECT si.product_id, SUM(si.stock_deducted) as qty
-       FROM sale_items si
-       JOIN sales s ON s.id = si.sale_id
-       WHERE si.product_id IN (${placeholders}) AND s.created_at >= ? AND s.created_at < ?
-       GROUP BY si.product_id`,
-    )
-    .all(...ids, start, end);
+    const movRows = db
+      .prepare(
+        `SELECT product_id, type, SUM(quantity) as qty
+         FROM stock_movements
+         WHERE product_id IN (${placeholders}) AND created_at >= ? AND created_at < ?
+         GROUP BY product_id, type`,
+      )
+      .all(...ids, start, end);
+    const saleRows = db
+      .prepare(
+        `SELECT si.product_id, SUM(si.stock_deducted) as qty
+         FROM sale_items si
+         JOIN sales s ON s.id = si.sale_id
+         WHERE si.product_id IN (${placeholders}) AND s.created_at >= ? AND s.created_at < ?
+         GROUP BY si.product_id`,
+      )
+      .all(...ids, start, end);
 
-  const todayIn = {};
-  const todayOut = {};
-  const todaySold = {};
-  for (const r of movRows) {
-    if (r.type === "in") todayIn[r.product_id] = r.qty || 0;
-    else todayOut[r.product_id] = r.qty || 0;
-  }
-  for (const r of saleRows) todaySold[r.product_id] = r.qty || 0;
+    const todayIn = {};
+    const todayOut = {};
+    const todaySold = {};
+    for (const r of movRows) {
+      if (r.type === "in") todayIn[r.product_id] = Number(r.qty) || 0;
+      else todayOut[r.product_id] = Number(r.qty) || 0;
+    }
+    for (const r of saleRows) todaySold[r.product_id] = Number(r.qty) || 0;
 
-  for (const p of products) {
-    const ti = todayIn[p.id] || 0;
-    const to = todayOut[p.id] || 0;
-    const ts = todaySold[p.id] || 0;
-    p.todayIn = ti;
-    p.todaySold = ts;
-    p.startOfDay = (p.stock || 0) - ti + to + ts;
+    for (const p of products) {
+      if (!p) continue;
+      const ti = todayIn[p.id] || 0;
+      const to = todayOut[p.id] || 0;
+      const ts = todaySold[p.id] || 0;
+      p.todayIn = ti;
+      p.todaySold = ts;
+      p.startOfDay = (Number(p.stock) || 0) - ti + to + ts;
+    }
+  } catch (e) {
+    console.error("Error in attachDaySummary:", e);
+    for (const p of products) {
+      if (!p) continue;
+      p.todayIn = p.todayIn || 0;
+      p.todaySold = p.todaySold || 0;
+      p.startOfDay = p.startOfDay != null ? p.startOfDay : Number(p.stock) || 0;
+    }
   }
   return products;
 };
 
 ipcMain.handle("get-products", async (event, params) => {
-  const {
-    search,
-    category_id,
-    supplier_id,
-    sortField,
-    sortDir,
-    page,
-    rowsPerPage,
-  } = params || {};
-  const conditions = [];
-  const queryParams = [];
-  if (search && search.length >= 2) {
-    conditions.push("(nomar(p.name) LIKE ? OR nomar(p.brand) LIKE ? OR p.barcode LIKE ?)");
-    const n = `%${nomarize(search)}%`;
-    const raw = `%${search.trim()}%`;
-    queryParams.push(n, n, raw);
+  try {
+    const {
+      search,
+      category_id,
+      supplier_id,
+      sortField,
+      sortDir,
+      page,
+      rowsPerPage,
+    } = params || {};
+    const conditions = [];
+    const queryParams = [];
+    if (search && search.length >= 2) {
+      conditions.push("(nomar(p.name) LIKE ? OR nomar(p.brand) LIKE ? OR p.barcode LIKE ?)");
+      const n = `%${nomarize(search)}%`;
+      const raw = `%${search.trim()}%`;
+      queryParams.push(n, n, raw);
+    }
+    if (category_id) {
+      conditions.push("p.category_id = ?");
+      queryParams.push(parseInt(category_id));
+    }
+    if (supplier_id) {
+      conditions.push("p.supplier_id = ?");
+      queryParams.push(parseInt(supplier_id));
+    }
+    const where =
+      conditions.length > 0
+        ? "WHERE " + conditions.join(" AND ") + " AND p.is_active = 1"
+        : "WHERE p.is_active = 1";
+    const allowedSort = { name: "p.name", price: "p.price", stock: "p.stock" };
+    const col = allowedSort[sortField] || "p.name";
+    const dir = sortDir === "desc" ? "DESC" : "ASC";
+
+    const countRow = db
+      .prepare(
+        `
+      SELECT COUNT(*) as count FROM products p ${where}
+    `,
+      )
+      .get(...queryParams);
+    const total = countRow ? countRow.count : 0;
+
+    const limit = Math.min(Math.max(parseInt(rowsPerPage) || 10, 1), 100);
+    const offset = Math.max(parseInt(page) || 0, 0) * limit;
+
+    const products = db
+      .prepare(
+        `
+      SELECT p.*, c.name as category_name, s.name as supplier_name
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      LEFT JOIN suppliers s ON p.supplier_id = s.id
+      ${where}
+      ORDER BY ${col} ${dir}
+      LIMIT ? OFFSET ?
+    `,
+      )
+      .all(...queryParams, limit, offset);
+
+    const statsConditions =
+      conditions.length > 0
+        ? conditions.join(" AND ") + " AND p.is_active = 1"
+        : "p.is_active = 1";
+    const statsParams = conditions.length > 0 ? [...queryParams] : [];
+
+    const stats = db
+      .prepare(
+        `
+      SELECT
+        COUNT(*) as totalCount,
+        COALESCE(SUM(p.price * p.stock), 0) as totalValue,
+        SUM(CASE WHEN p.stock <= COALESCE(p.min_stock, 5) THEN 1 ELSE 0 END) as lowStockCount,
+        SUM(CASE WHEN p.discount_percent > 0 THEN 1 ELSE 0 END) as discountedCount
+      FROM products p WHERE ${statsConditions}
+    `,
+      )
+      .get(...statsParams) || {
+        totalCount: 0,
+        totalValue: 0,
+        lowStockCount: 0,
+        discountedCount: 0,
+      };
+
+    return { products: attachDaySummary(attachPrices(products)), total, stats };
+  } catch (error) {
+    console.error("Error in get-products:", error);
+    return {
+      products: [],
+      total: 0,
+      stats: { totalCount: 0, totalValue: 0, lowStockCount: 0, discountedCount: 0 },
+      error: error.message,
+    };
   }
-  if (category_id) {
-    conditions.push("p.category_id = ?");
-    queryParams.push(parseInt(category_id));
-  }
-  if (supplier_id) {
-    conditions.push("p.supplier_id = ?");
-    queryParams.push(parseInt(supplier_id));
-  }
-  const where =
-    conditions.length > 0
-      ? "WHERE " + conditions.join(" AND ") + " AND p.is_active = 1"
-      : "WHERE p.is_active = 1";
-  const allowedSort = { name: "p.name", price: "p.price", stock: "p.stock" };
-  const col = allowedSort[sortField] || "p.name";
-  const dir = sortDir === "desc" ? "DESC" : "ASC";
-
-  const total = db
-    .prepare(
-      `
-    SELECT COUNT(*) as count FROM products p ${where}
-  `,
-    )
-    .get(...queryParams).count;
-
-  const limit = Math.min(Math.max(parseInt(rowsPerPage) || 10, 1), 100);
-  const offset = Math.max(parseInt(page) || 0, 0) * limit;
-
-  const products = db
-    .prepare(
-      `
-    SELECT p.*, c.name as category_name, s.name as supplier_name
-    FROM products p
-    LEFT JOIN categories c ON p.category_id = c.id
-    LEFT JOIN suppliers s ON p.supplier_id = s.id
-    ${where}
-    ORDER BY ${col} ${dir}
-    LIMIT ? OFFSET ?
-  `,
-    )
-    .all(...queryParams, limit, offset);
-
-  const statsConditions =
-    conditions.length > 0
-      ? conditions.join(" AND ") + " AND p.is_active = 1"
-      : "p.is_active = 1";
-  const statsParams = conditions.length > 0 ? [...queryParams] : [];
-
-  const stats = db
-    .prepare(
-      `
-    SELECT
-      COUNT(*) as totalCount,
-      COALESCE(SUM(p.price * p.stock), 0) as totalValue,
-      SUM(CASE WHEN p.stock <= COALESCE(p.min_stock, 5) THEN 1 ELSE 0 END) as lowStockCount,
-      SUM(CASE WHEN p.discount_percent > 0 THEN 1 ELSE 0 END) as discountedCount
-    FROM products p WHERE ${statsConditions}
-  `,
-    )
-    .get(...statsParams);
-
-  return { products: attachDaySummary(attachPrices(products)), total, stats };
 });
 
 ipcMain.handle("get-all-products", async () => {
@@ -1245,15 +1321,9 @@ ipcMain.handle(
 
     // Register the cost as an expense (even if no cash register is open)
     // unless the user opted to pay via "Retiro de Efectivo" (registerExpense=false).
+    // Busca caja abierta sin filtrar fecha para sobrevivir a cortes de luz.
     if (registerExpense !== false) {
-      const todayMX = new Date().toLocaleDateString("en-CA", {
-        timeZone: "America/Mexico_City",
-      });
-      const openReg = db
-        .prepare(
-          "SELECT id FROM cash_register WHERE date = ? AND status = 'open'",
-        )
-        .get(todayMX);
+      const openReg = findOpenRegister(cashierId, undefined);
       if (roundedCost > 0) {
         if (openReg) {
           db.prepare(
@@ -1560,15 +1630,10 @@ ipcMain.handle(
     { cart, total, paymentMethod, discountTotal, cashierName, cashierId, role },
   ) => {
     const recordSale = db.transaction(() => {
-      // Link to open register if exists (use MX date for lookup)
-      const todayMX = new Date().toLocaleDateString("en-CA", {
-        timeZone: "America/Mexico_City",
-      });
-      const openReg = db
-        .prepare(
-          "SELECT id FROM cash_register WHERE date = ? AND status = 'open'",
-        )
-        .get(todayMX);
+      // Liga a la caja abierta SIN filtrar por fecha: si la luz se fue
+      // ayer y la caja sigue 'open', las ventas de hoy la reanudan en vez
+      // de quedar huérfanas (register_id NULL).
+      const openReg = findOpenRegister(cashierId, role);
       const registerId = openReg ? openReg.id : null;
 
       const saleStmt = db.prepare(
@@ -1809,6 +1874,113 @@ function toUTCDateRange(mxDateStr) {
   const end = `${nextStr} ${String(MX_UTC_OFFSET).padStart(2, "0")}:00:00`;
   return { start, end };
 }
+
+// ─── Recuperación ante corte de luz ─────────────────────────────
+// Toda venta/gasto se liga por register_id (no por fecha), así el corte
+// siempre cuadra aunque se cierre días después. Estas funciones buscan
+// la caja abierta SIN filtrar por fecha para no dejar cajas huérfanas
+// cuando la luz se va y regresa al otro día.
+const findOpenRegister = (cashierId, role) => {
+  try {
+    if (role === "admin") {
+      return (
+        db
+          .prepare(
+            "SELECT * FROM cash_register WHERE status = 'open' ORDER BY opened_at DESC, id DESC LIMIT 1",
+          )
+          .get() || null
+      );
+    }
+    if (cashierId) {
+      return (
+        db
+          .prepare(
+            "SELECT * FROM cash_register WHERE status = 'open' AND (cashier_id = ? OR opened_by = ?) ORDER BY opened_at DESC, id DESC LIMIT 1",
+          )
+          .get(cashierId, cashierId) || null
+      );
+    }
+    return (
+      db
+        .prepare(
+          "SELECT * FROM cash_register WHERE status = 'open' ORDER BY opened_at DESC, id DESC LIMIT 1",
+        )
+        .get() || null
+    );
+  } catch (e) {
+    return null;
+  }
+};
+
+const summarizeRegister = (register) => {
+  if (!register) return null;
+  const sales = db
+    .prepare(
+      "SELECT payment_method, COALESCE(SUM(total),0) as total, COUNT(*) as cnt FROM sales WHERE register_id = ? AND (status IS NULL OR status != 'cancelado') GROUP BY payment_method",
+    )
+    .all(register.id);
+  const cashSales = sales.find((s) => s.payment_method === "cash")?.total || 0;
+  const cardSales = sales.find((s) => s.payment_method === "card")?.total || 0;
+  const transferSales =
+    sales.find((s) => s.payment_method === "transfer")?.total || 0;
+  const saleCount = sales.reduce((n, s) => n + (s.cnt || 0), 0);
+  const opener = register.opened_by
+    ? db.prepare("SELECT name FROM cashiers WHERE id = ?").get(register.opened_by)
+    : null;
+  const expectedClose =
+    Number(register.opening_balance || 0) +
+    Number(cashSales || 0) -
+    Number(register.expenses || 0);
+  return {
+    ...register,
+    opener_name: opener?.name || register.opener_name || null,
+    cash_sales: cashSales,
+    card_sales: cardSales,
+    transfer_sales: transferSales,
+    sale_count: saleCount,
+    expected_close_computed: expectedClose,
+    is_stale: register.date !== mxToday(),
+  };
+};
+
+ipcMain.handle("get-recovery-info", async (event, { cashierId, role } = {}) => {
+  try {
+    const today = mxToday();
+    let rows;
+    if (role === "admin") {
+      rows = db
+        .prepare(
+          "SELECT * FROM cash_register WHERE status = 'open' ORDER BY opened_at ASC",
+        )
+        .all();
+    } else if (cashierId) {
+      rows = db
+        .prepare(
+          "SELECT * FROM cash_register WHERE status = 'open' AND (cashier_id = ? OR opened_by = ?) ORDER BY opened_at ASC",
+        )
+        .all(cashierId, cashierId);
+    } else {
+      rows = db
+        .prepare(
+          "SELECT * FROM cash_register WHERE status = 'open' ORDER BY opened_at ASC",
+        )
+        .all();
+    }
+    const pending = rows
+      .map(summarizeRegister)
+      .filter((r) => r && r.date !== today);
+    const openToday = findOpenRegister(cashierId, role);
+    return {
+      success: true,
+      wasUncleanShutdown,
+      today,
+      pending,
+      openToday: openToday ? summarizeRegister(openToday) : null,
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
 
 ipcMain.handle(
   "get-sales-for-today",
@@ -2191,21 +2363,7 @@ ipcMain.handle(
   "register-cash-expense",
   async (event, { amount, reason, cashierId, role }) => {
     try {
-      const today = mxToday();
-      let register;
-      if (role === "admin") {
-        register = db
-          .prepare(
-            "SELECT id, expenses FROM cash_register WHERE date = ? AND status = 'open'",
-          )
-          .get(today);
-      } else if (cashierId) {
-        register = db
-          .prepare(
-            "SELECT id, expenses FROM cash_register WHERE date = ? AND status = 'open' AND cashier_id = ?",
-          )
-          .get(today, cashierId);
-      }
+      const register = findOpenRegister(cashierId, role);
       if (!register)
         return { success: false, error: "No hay caja abierta para ti hoy" };
 
@@ -2229,26 +2387,16 @@ ipcMain.handle(
   async (event, { cashierId, role } = {}) => {
     try {
       const today = mxToday();
-      let register;
-      if (role === "admin") {
-        register = db
-          .prepare(
-            "SELECT * FROM cash_register WHERE date = ? AND status = 'open' ORDER BY id DESC LIMIT 1",
-          )
-          .get(today);
-      } else if (cashierId) {
-        register = db
-          .prepare(
-            "SELECT * FROM cash_register WHERE date = ? AND status = 'open' AND cashier_id = ? ORDER BY id DESC LIMIT 1",
-          )
-          .get(today, cashierId);
-      }
+      // Caja abierta sin filtrar fecha: si quedó abierta por un apagón,
+      // se sigue mostrando para poder cerrarla al volver la luz.
+      let register = findOpenRegister(cashierId, role);
       if (!register) {
-        register = db
-          .prepare(
-            "SELECT * FROM cash_register WHERE date = ? ORDER BY id DESC LIMIT 1",
-          )
-          .get(today);
+        register =
+          db
+            .prepare(
+              "SELECT * FROM cash_register WHERE date = ? ORDER BY id DESC LIMIT 1",
+            )
+            .get(today) || null;
       }
       if (register) {
         const opener = db
@@ -2280,23 +2428,21 @@ ipcMain.handle(
   async (event, { openingBalance, cashierId, role }) => {
     try {
       const today = mxToday();
-      if (role === "admin") {
-        const existing = db
-          .prepare(
-            "SELECT id FROM cash_register WHERE date = ? AND status = 'open'",
-          )
-          .get(today);
-        if (existing)
-          return { success: false, error: "Ya hay una caja abierta hoy" };
-      } else if (cashierId) {
-        const existing = db
-          .prepare(
-            "SELECT id FROM cash_register WHERE date = ? AND status = 'open' AND cashier_id = ?",
-          )
-          .get(today, cashierId);
-        if (existing)
-          return { success: false, error: "Ya tienes una caja abierta" };
-      }
+      // Bloquea duplicados aunque la caja sea de un día anterior
+      // (corte de luz): primero hay que cerrar la pendiente.
+      const existingAny = findOpenRegister(cashierId, role);
+      if (existingAny)
+        return {
+          success: false,
+          error:
+            existingAny.date !== today
+              ? `Tienes una caja pendiente del ${existingAny.date}. Ciérrala primero para poder abrir una nueva.`
+              : role === "admin"
+                ? "Ya hay una caja abierta hoy"
+                : "Ya tienes una caja abierta",
+          pendingRegisterId: existingAny.id,
+          pendingDate: existingAny.date,
+        };
 
       db.prepare(
         "INSERT INTO cash_register (date, opening_balance, cashier_id, opened_by) VALUES (?, ?, ?, ?)",
@@ -2327,18 +2473,23 @@ ipcMain.handle(
           )
           .get(registerId);
       } else {
-        register = db
-          .prepare(
-            `SELECT cr.*, c.role AS opener_role
-             FROM cash_register cr
-             LEFT JOIN cashiers c ON cr.opened_by = c.id
-             WHERE cr.date = ? AND cr.status = 'open'
-             ORDER BY cr.id DESC LIMIT 1`,
-          )
-          .get(today);
+        // Sin registerId explícito: cierra la caja abierta que le
+        // corresponda al usuario, aunque sea de un día anterior
+        // (recuperación tras corte de luz).
+        const openAny = findOpenRegister(cashierId, role);
+        register = openAny
+          ? db
+              .prepare(
+                `SELECT cr.*, c.role AS opener_role
+                 FROM cash_register cr
+                 LEFT JOIN cashiers c ON cr.opened_by = c.id
+                 WHERE cr.id = ? AND cr.status = 'open'`,
+              )
+              .get(openAny.id)
+          : null;
       }
       if (!register)
-        return { success: false, error: "No hay caja abierta hoy" };
+        return { success: false, error: "No hay caja abierta por cerrar" };
 
       const openerIsAdmin = register.opener_role === "admin";
       const isOwnRegister =
@@ -2433,21 +2584,7 @@ ipcMain.handle(
   "get-cash-register-expenses",
   async (event, { cashierId, role } = {}) => {
     try {
-      const today = mxToday();
-      let register;
-      if (role === "admin") {
-        register = db
-          .prepare(
-            "SELECT id FROM cash_register WHERE date = ? AND status = 'open'",
-          )
-          .get(today);
-      } else if (cashierId) {
-        register = db
-          .prepare(
-            "SELECT id FROM cash_register WHERE date = ? AND status = 'open' AND cashier_id = ?",
-          )
-          .get(today, cashierId);
-      }
+      const register = findOpenRegister(cashierId, role);
       if (!register) return { success: true, expenses: [] };
       const expenses = db
         .prepare(
@@ -2585,7 +2722,7 @@ ipcMain.handle("get-register-sales-detail", async (event, registerId) => {
     const items = db
       .prepare(
         `
-      SELECT si.*, s.status, COALESCE(p.name, si.product_name) AS product_name, p.barcode, s.created_at as sale_created_at
+      SELECT si.*, s.status, COALESCE(p.name, si.product_name) AS product_name, p.barcode, p.sale_unit, s.created_at as sale_created_at
       FROM sale_items si
       JOIN sales s ON si.sale_id = s.id
       LEFT JOIN products p ON si.product_id = p.id
