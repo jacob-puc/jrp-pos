@@ -64,4 +64,4 @@ const getStatus = () => ({
   port: DISCOVERY_PORT,
 });
 
-module.exports = { startDiscovery, stopDiscovery, getStatus };
+module.exports = { startDiscovery, stopDiscovery, getStatus, getLocalIP };

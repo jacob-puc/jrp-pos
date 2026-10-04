@@ -1,8 +1,8 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { keyframes } from "@emotion/react";
 import {
   Dialog, DialogContent, TextField, Button, Typography, Box, Card, CardContent,
-  Alert, Avatar, Fade, useTheme, InputAdornment, IconButton,
+  Alert, Avatar, Fade, useTheme, InputAdornment, IconButton, CircularProgress,
 } from "@mui/material";
 import {
   Store, Person, CheckCircle, LocationOn, ChevronRight, ChevronLeft, Lock, VisibilityOutlined, VisibilityOff,
@@ -29,27 +29,94 @@ const SetupModal = ({ open, onComplete, onClose }) => {
     ownerName: "",
     address: "",
     adminPin: "",
+    mode: "host",
+    hostUrl: "",
+    activationCode: "",
   });
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showPin, setShowPin] = useState(false);
+  const [hostInfo, setHostInfo] = useState(null);
+  const [hostInfoLoading, setHostInfoLoading] = useState(false);
+  const [hostInfoError, setHostInfoError] = useState("");
 
   const steps = [
+    { label: "Modo", icon: <Store sx={{ fontSize: 16 }} /> },
     { label: "Tienda", icon: <Store sx={{ fontSize: 16 }} /> },
-    { label: "Dueño", icon: <Person sx={{ fontSize: 16 }} /> },
+    { label: formData.mode === "client" ? "Usuarios" : "Dueño", icon: <Person sx={{ fontSize: 16 }} /> },
     { label: "Listo", icon: <CheckCircle sx={{ fontSize: 16 }} /> },
   ];
+
+  useEffect(() => {
+    if (formData.mode !== "client" || !formData.hostUrl.trim() || !formData.activationCode.trim()) {
+      setHostInfo(null);
+      setHostInfoError("");
+      setHostInfoLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setHostInfo(null);
+    setHostInfoError("");
+    const timer = setTimeout(async () => {
+      setHostInfoLoading(true);
+      try {
+        const result = await window.api.invoke("get-host-setup-info", {
+          hostUrl: formData.hostUrl.trim(),
+          activationCode: formData.activationCode.trim(),
+        });
+        if (cancelled) return;
+        if (!result.success) {
+          setHostInfoError(result.error || "No se pudieron cargar los datos del Host");
+          return;
+        }
+        setHostInfo(result);
+        setFormData((current) => ({
+          ...current,
+          storeName: result.storeName || current.storeName,
+          ownerName: result.ownerName || current.ownerName,
+          address: result.address || current.address,
+        }));
+      } catch (error) {
+        if (!cancelled) setHostInfoError(error.message || "No se pudieron cargar los datos del Host");
+      } finally {
+        if (!cancelled) setHostInfoLoading(false);
+      }
+    }, 500);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [formData.mode, formData.hostUrl, formData.activationCode]);
 
   const validateStep = (step) => {
     const newErrors = {};
 
     if (step === 0) {
+      if (formData.mode === "client") {
+        if (!formData.hostUrl.trim()) {
+          newErrors.hostUrl = "La IP/Host del servidor es requerida";
+        }
+        if (!formData.activationCode.trim()) {
+          newErrors.activationCode = "El código de activación es requerido";
+        } else if (!hostInfo) {
+          newErrors.activationCode = "Espera a que se validen los datos del Host";
+        }
+      }
+    }
+
+    if (step === 1) {
       if (!formData.storeName.trim()) {
         newErrors.storeName = "El nombre de la tienda es requerido";
       }
     }
 
-    if (step === 1) {
+    if (step === 2) {
+      if (formData.mode === "client") {
+        setErrors({});
+        return true;
+      }
       if (!formData.ownerName.trim()) {
         newErrors.ownerName = "El nombre del propietario es requerido";
       }
@@ -77,25 +144,43 @@ const SetupModal = ({ open, onComplete, onClose }) => {
   };
 
   const handleFinish = async () => {
-    if (!validateStep(1)) return;
+    if (!validateStep(2)) return;
 
     setIsSubmitting(true);
     try {
+      if (formData.mode === "client") {
+        // Emparejar con el Host: canjea el código de activación por un
+        // token persistente y guarda la conexión en la configuración.
+        const pair = await window.api.invoke("pair-with-host", {
+          hostUrl: formData.hostUrl.trim(),
+          activationCode: formData.activationCode.trim(),
+        });
+        if (!pair.success) {
+          setErrors({ submit: pair.error || "No se pudo vincular con el Host" });
+          setIsSubmitting(false);
+          return;
+        }
+      }
+
       await window.api.invoke("save-setting", "store_name", formData.storeName.trim());
       await window.api.invoke("save-setting", "owner_name", formData.ownerName.trim());
       await window.api.invoke("save-setting", "store_address", formData.address.trim());
+      const modeResult = await window.api.invoke("set-app-mode", formData.mode);
+      if (!modeResult.success) throw new Error(modeResult.error || "No se pudo guardar el modo de caja");
       await window.api.invoke("save-setting", "setup_completed", "true");
 
-      // Create admin user cashier
-      await window.api.invoke("add-cashier", { name: formData.ownerName.trim(), pin: formData.adminPin.trim(), role: "admin" });
+      if (formData.mode === "host") {
+        await window.api.invoke("add-cashier", { name: formData.ownerName.trim(), pin: formData.adminPin.trim(), role: "admin" });
+      }
 
-      setActiveStep(2);
+      setActiveStep(3);
 
       setTimeout(() => {
         onComplete({
           storeName: formData.storeName.trim(),
           ownerName: formData.ownerName.trim(),
           address: formData.address.trim(),
+          mode: formData.mode,
         });
       }, 2000);
     } catch (error) {
@@ -107,7 +192,11 @@ const SetupModal = ({ open, onComplete, onClose }) => {
   };
 
   const handleInputChange = (field) => (event) => {
-    setFormData({ ...formData, [field]: event.target.value });
+    setFormData((current) => ({ ...current, [field]: event.target.value }));
+    if (field === "hostUrl" || field === "activationCode") {
+      setHostInfo(null);
+      setHostInfoError("");
+    }
     if (errors[field]) {
       setErrors({ ...errors, [field]: null });
     }
@@ -163,7 +252,7 @@ const SetupModal = ({ open, onComplete, onClose }) => {
             SISTEMA VENTAS
           </Typography>
           <Typography variant="body2" color="textSecondary" sx={{ mt: 0.5 }}>
-            Configura tu tienda en 3 pasos
+            Configura tu tienda en 4 pasos
           </Typography>
         </Box>
 
@@ -227,6 +316,82 @@ const SetupModal = ({ open, onComplete, onClose }) => {
               <Fade in={activeStep === 0} timeout={350}>
                 <Box>
                   <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>
+                    Tipo de Caja
+                  </Typography>
+                  <Typography variant="body2" color="textSecondary" sx={{ mb: 3 }}>
+                    Elige el rol de este equipo en tu negocio
+                  </Typography>
+                  <Box sx={{ display: "flex", gap: 2, mb: 2 }}>
+                    <Card
+                      onClick={() => setFormData({ ...formData, mode: "host" })}
+                      sx={{
+                        flex: 1, cursor: "pointer",
+                        border: formData.mode === "host" ? "2px solid #3b82f6" : "1px solid rgba(148,163,184,0.3)",
+                      }}
+                    >
+                      <CardContent>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Caja Principal</Typography>
+                        <Typography variant="caption" color="textSecondary">Administra la tienda y levanta el servidor API</Typography>
+                      </CardContent>
+                    </Card>
+                    <Card
+                      onClick={() => setFormData({ ...formData, mode: "client" })}
+                      sx={{
+                        flex: 1, cursor: "pointer",
+                        border: formData.mode === "client" ? "2px solid #3b82f6" : "1px solid rgba(148,163,184,0.3)",
+                      }}
+                    >
+                      <CardContent>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Caja Adicional</Typography>
+                        <Typography variant="caption" color="textSecondary">Se conecta al servidor de la caja principal</Typography>
+                      </CardContent>
+                    </Card>
+                  </Box>
+                  {formData.mode === "client" && (
+                    <>
+                      <TextField
+                        fullWidth
+                        label="IP / Host del Servidor"
+                        placeholder="Ej: 192.168.1.50:3456"
+                        value={formData.hostUrl}
+                        onChange={handleInputChange("hostUrl")}
+                        error={!!errors.hostUrl}
+                        helperText={errors.hostUrl}
+                        sx={{ mb: 2 }}
+                      />
+                      <TextField
+                        fullWidth
+                        label="Código de Activación"
+                        placeholder="Código mostrado en la caja principal"
+                        value={formData.activationCode}
+                        onChange={handleInputChange("activationCode")}
+                        error={!!errors.activationCode}
+                        helperText={errors.activationCode}
+                      />
+                      {hostInfoLoading && (
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 1 }}>
+                          <CircularProgress size={16} />
+                          <Typography variant="caption">Conectando y cargando tienda y usuarios...</Typography>
+                        </Box>
+                      )}
+                      {hostInfoError && <Alert severity="error" sx={{ mt: 1 }}>{hostInfoError}</Alert>}
+                      {hostInfo && (
+                        <Alert severity="success" sx={{ mt: 1 }}>
+                          Host conectado: <strong>{hostInfo.storeName || "Tienda"}</strong>. Usuarios:{" "}
+                          {hostInfo.cashiers.length
+                            ? hostInfo.cashiers.map((cashier) => cashier.name).join(", ")
+                            : "aún no hay usuarios activos"}
+                        </Alert>
+                      )}
+                    </>
+                  )}
+                </Box>
+              </Fade>
+            )}
+            {activeStep === 1 && (
+              <Fade in={activeStep === 1} timeout={350}>
+                <Box>
+                  <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>
                     ¡Bienvenido!
                   </Typography>
                   <Typography variant="body2" color="textSecondary" sx={{ mb: 3 }}>
@@ -265,15 +430,37 @@ const SetupModal = ({ open, onComplete, onClose }) => {
                 </Box>
               </Fade>
             )}
-            {activeStep === 1 && (
-              <Fade in={activeStep === 1} timeout={350}>
+            {activeStep === 2 && (
+              <Fade in={activeStep === 2} timeout={350}>
                 <Box>
-                  <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>
-                    Información del Propietario
-                  </Typography>
-                  <Typography variant="body2" color="textSecondary" sx={{ mb: 3 }}>
-                    Aparecerá en reportes y facturas
-                  </Typography>
+                  {formData.mode === "client" ? (
+                    <>
+                      <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>
+                        Usuarios del Host
+                      </Typography>
+                      <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
+                        Iniciarás sesión en esta caja con un usuario y PIN existentes en la caja principal.
+                      </Typography>
+                      {hostInfo?.cashiers?.length ? (
+                        <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                          {hostInfo.cashiers.map((cashier) => (
+                            <Alert key={cashier.id} severity="info" icon={<Person />}>
+                              {cashier.name} · {cashier.role === "admin" ? "Administrador" : "Cajero"}
+                            </Alert>
+                          ))}
+                        </Box>
+                      ) : (
+                        <Alert severity="warning">No hay usuarios activos cargados del Host.</Alert>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>
+                        Información del Propietario
+                      </Typography>
+                      <Typography variant="body2" color="textSecondary" sx={{ mb: 3 }}>
+                        Aparecerá en reportes y facturas
+                      </Typography>
                   <TextField
                     fullWidth
                     label="Nombre del Propietario"
@@ -317,11 +504,13 @@ const SetupModal = ({ open, onComplete, onClose }) => {
                       ),
                     }}
                   />
+                    </>
+                  )}
                 </Box>
               </Fade>
             )}
-            {activeStep === 2 && (
-              <Fade in={activeStep === 2} timeout={600}>
+            {activeStep === 3 && (
+              <Fade in={activeStep === 3} timeout={600}>
                 <Box sx={{ textAlign: "center", py: 3 }}>
                   <Avatar
                     sx={{
@@ -358,7 +547,7 @@ const SetupModal = ({ open, onComplete, onClose }) => {
         </Card>
       </DialogContent>
 
-      {activeStep < 2 && (
+      {activeStep < 3 && (
         <Box sx={{ display: "flex", justifyContent: "space-between", px: 3, pb: 3 }}>
           <Box>
             {onClose && activeStep === 0 && (

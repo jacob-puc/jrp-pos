@@ -2,8 +2,11 @@ import React, { useState, useEffect, useRef } from "react";
 import {
   Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button,
   Typography, Box, Stack, useTheme, Switch, FormControlLabel, Divider,
+  Alert, CircularProgress,
 } from "@mui/material";
-import { Store, LocationOn, Save, CloudUpload, DeleteOutline } from "@mui/icons-material";
+import {
+  Store, LocationOn, Save, CloudUpload, DeleteOutline, ContentCopy, Refresh,
+} from "@mui/icons-material";
 
 const resizeImage = (dataUrl, maxSize = 256) =>
   new Promise((resolve) => {
@@ -26,7 +29,7 @@ const resizeImage = (dataUrl, maxSize = 256) =>
     img.src = dataUrl;
   });
 
-const StoreSettingsDialog = ({ open, onClose }) => {
+const StoreSettingsDialog = ({ open, onClose, isAdmin }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === "dark";
   const [formData, setFormData] = useState({ storeName: "", address: "" });
@@ -35,13 +38,36 @@ const StoreSettingsDialog = ({ open, onClose }) => {
   const [printTwoTickets, setPrintTwoTickets] = useState(false);
   const [printEnabled, setPrintEnabled] = useState(true);
   const [logo, setLogo] = useState("");
+  const [appMode, setAppMode] = useState("host");
+  const [activationCode, setActivationCode] = useState("");
+  const [activationLoading, setActivationLoading] = useState(false);
+  const [activationError, setActivationError] = useState("");
+  const [activationMessage, setActivationMessage] = useState("");
   const fileInputRef = useRef(null);
+
+  const loadActivationCode = async () => {
+    setActivationLoading(true);
+    setActivationError("");
+    setActivationMessage("");
+    try {
+      const result = await window.api.invoke("get-activation-code");
+      if (!result.success) throw new Error(result.error || "No se pudo obtener el código");
+      setActivationCode(result.code);
+    } catch (err) {
+      setActivationError(err.message || "No se pudo obtener el código de activación");
+    } finally {
+      setActivationLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (open) {
       const load = async () => {
         try {
-          const settings = await window.api.invoke("get-all-settings");
+          const [settings, mode] = await Promise.all([
+            window.api.invoke("get-all-settings"),
+            window.api.invoke("get-app-mode"),
+          ]);
           setFormData({
             storeName: settings.store_name || "",
             address: settings.store_address || "",
@@ -49,13 +75,43 @@ const StoreSettingsDialog = ({ open, onClose }) => {
           setPrintTwoTickets(settings.print_two_tickets === "true");
           setPrintEnabled(settings.print_enabled !== "false");
           setLogo(settings.store_logo || "");
+          setAppMode(mode.mode || "host");
+          if (mode.mode !== "client" && isAdmin) await loadActivationCode();
+          else setActivationCode("");
         } catch (err) {
           console.error("Error loading settings:", err);
         }
       };
       load();
     }
-  }, [open]);
+  }, [open, isAdmin]);
+
+  const handleRegenerateActivationCode = async () => {
+    if (!window.confirm("El código anterior dejará de funcionar. ¿Quieres generar uno nuevo?")) return;
+    setActivationLoading(true);
+    setActivationError("");
+    setActivationMessage("");
+    try {
+      const result = await window.api.invoke("regenerate-activation-code");
+      if (!result.success) throw new Error(result.error || "No se pudo regenerar el código");
+      setActivationCode(result.code);
+      setActivationMessage("Código renovado. Comparte este código con las cajas que vas a vincular.");
+    } catch (err) {
+      setActivationError(err.message || "No se pudo regenerar el código de activación");
+    } finally {
+      setActivationLoading(false);
+    }
+  };
+
+  const handleCopyActivationCode = async () => {
+    try {
+      await navigator.clipboard.writeText(activationCode);
+      setActivationMessage("Código copiado al portapapeles.");
+      setActivationError("");
+    } catch (err) {
+      setActivationError("No se pudo copiar automáticamente. Selecciona y copia el código manualmente.");
+    }
+  };
 
   const handleLogoChange = async (e) => {
     const file = e.target.files?.[0];
@@ -144,6 +200,52 @@ const StoreSettingsDialog = ({ open, onClose }) => {
               startAdornment: <LocationOn sx={{ color: "#64748b", mr: 1, fontSize: 18 }} />,
             }}
           />
+          <Divider sx={{ my: 0.5 }} />
+          {appMode === "client" ? (
+            <Alert severity="info">
+              Esta caja está configurada como Cliente. El código de activación se consulta en los ajustes de la caja Host.
+            </Alert>
+          ) : isAdmin ? (
+            <Box>
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.5 }}>
+                Código de activación del Host
+              </Typography>
+              <Typography variant="caption" color="textSecondary" sx={{ display: "block", mb: 1.5 }}>
+                Ingresa este código junto con la IP y el puerto del Host en cada caja Cliente.
+              </Typography>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                <TextField
+                  label="Código de activación"
+                  value={activationCode}
+                  fullWidth
+                  InputProps={{ readOnly: true, sx: { borderRadius: "8px", fontFamily: "monospace", letterSpacing: 2 } }}
+                  InputLabelProps={{ shrink: true }}
+                  helperText="Se genera y guarda automáticamente en esta caja."
+                />
+                <Button
+                  variant="outlined"
+                  startIcon={<ContentCopy />}
+                  onClick={handleCopyActivationCode}
+                  disabled={!activationCode || activationLoading}
+                  sx={{ borderRadius: "6px", whiteSpace: "nowrap" }}
+                >
+                  Copiar
+                </Button>
+              </Stack>
+              <Button
+                size="small"
+                color="warning"
+                startIcon={activationLoading ? <CircularProgress size={16} /> : <Refresh />}
+                onClick={handleRegenerateActivationCode}
+                disabled={activationLoading}
+                sx={{ mt: 1, textTransform: "none" }}
+              >
+                Generar código nuevo
+              </Button>
+              {activationError && <Alert severity="error" sx={{ mt: 1 }}>{activationError}</Alert>}
+              {activationMessage && <Alert severity="success" sx={{ mt: 1 }}>{activationMessage}</Alert>}
+            </Box>
+          ) : null}
           <Divider sx={{ my: 0.5 }} />
           <input
             ref={fileInputRef}

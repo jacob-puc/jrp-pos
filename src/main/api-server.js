@@ -18,12 +18,16 @@ const startServer = async (db, port = 3456) => {
   const app = express();
   app.use(express.json());
 
-  const safe = (handler) => async (req, res) => {
+  const safe = (handler, exposeDetails = false) => async (req, res) => {
     try {
       await handler(req, res);
     } catch (err) {
-      console.error("API error:", err.message);
-      res.status(500).json({ success: false, error: "Error interno del servidor" });
+      console.error(`API error ${req.method} ${req.originalUrl}:`, err.message);
+      res.status(500).json({
+        success: false,
+        error: "Error interno del servidor",
+        ...(exposeDetails ? { details: err.message } : {}),
+      });
     }
   };
 
@@ -47,16 +51,147 @@ const startServer = async (db, port = 3456) => {
   }));
 
   app.get("/api/cashiers", safe((req, res) => {
-    const cashiers = db.prepare("SELECT id, name, role, is_active FROM cashiers ORDER BY name").all();
+    const cashiers = db.prepare("SELECT id, name, role, is_active FROM cashiers WHERE is_active = 1 ORDER BY name").all();
     res.json({ success: true, cashiers });
   }));
 
+  db.exec(`CREATE TABLE IF NOT EXISTS paired_devices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_name TEXT,
+    device_type TEXT DEFAULT 'desktop_client',
+    token TEXT UNIQUE NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_seen DATETIME
+  )`);
+  const pairedDeviceColumns = new Set(
+    db.prepare("PRAGMA table_info(paired_devices)").all().map((column) => column.name),
+  );
+  const ensurePairedDeviceColumn = (name, definition) => {
+    if (!pairedDeviceColumns.has(name)) {
+      db.exec(`ALTER TABLE paired_devices ADD COLUMN ${name} ${definition}`);
+      pairedDeviceColumns.add(name);
+    }
+  };
+  ensurePairedDeviceColumn("device_name", "TEXT");
+  ensurePairedDeviceColumn("device_type", "TEXT DEFAULT 'desktop_client'");
+  ensurePairedDeviceColumn("token", "TEXT");
+  ensurePairedDeviceColumn("created_at", "DATETIME");
+  ensurePairedDeviceColumn("last_seen", "DATETIME");
+  db.exec(`
+    UPDATE paired_devices
+    SET token = lower(hex(randomblob(32)))
+    WHERE token IS NULL OR token = ''
+  `);
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_paired_devices_token
+    ON paired_devices(token)
+  `);
+
+  app.post("/api/auth/verify", safe((req, res) => {
+    const { id, pin } = req.body || {};
+    if (!id || !pin) return res.status(400).json({ success: false, error: "Usuario y PIN requeridos" });
+    const cashier = db
+      .prepare("SELECT id, name, role FROM cashiers WHERE id = ? AND pin = ? AND is_active = 1")
+      .get(id, pin);
+    if (!cashier) return res.status(401).json({ success: false, error: "PIN inválido" });
+    res.json({ success: true, cashier });
+  }));
+
+  app.post("/api/auth/host-info", safe((req, res) => {
+    const provided = String(req.body?.activationCode || "").trim().toUpperCase();
+    const row = db
+      .prepare("SELECT value FROM settings WHERE key = 'activation_code'")
+      .get();
+    if (!provided || !row || String(row.value).trim().toUpperCase() !== provided) {
+      return res.status(401).json({ success: false, error: "Código de activación inválido" });
+    }
+
+    const settings = db
+      .prepare("SELECT key, value FROM settings WHERE key IN ('store_name', 'owner_name', 'store_address')")
+      .all()
+      .reduce((result, setting) => ({ ...result, [setting.key]: setting.value }), {});
+    const cashiers = db
+      .prepare("SELECT id, name, role FROM cashiers WHERE is_active = 1 ORDER BY name")
+      .all();
+    res.json({
+      success: true,
+      storeName: settings.store_name || "",
+      ownerName: settings.owner_name || "",
+      address: settings.store_address || "",
+      cashiers,
+    });
+  }));
+
+  // Tokens persistentes de cajas cliente (desktop_client) ligadas vía
+  // activation code. A diferencia de activeTokens (PIN de cajero, en memoria),
+  // estos se guardan en la tabla paired_devices y sobreviven reinicios.
+  const deviceTokens = {};
+  try {
+    for (const row of db
+      .prepare("SELECT token, device_name, device_type FROM paired_devices")
+      .all()) {
+      deviceTokens[row.token] = {
+        deviceName: row.device_name,
+        deviceType: row.device_type,
+      };
+    }
+  } catch {}
+
   const requireAuth = (req, res, next) => {
     const token = req.headers.authorization;
-    if (!token || !activeTokens[token]) return res.status(401).json({ success: false, error: "No autorizado" });
-    req.cashierId = activeTokens[token].cashierId;
-    next();
+    if (!token) return res.status(401).json({ success: false, error: "No autorizado" });
+    if (activeTokens[token]) {
+      req.cashierId = activeTokens[token].cashierId;
+      return next();
+    }
+    const device = deviceTokens[token] || db
+      .prepare("SELECT device_name, device_type FROM paired_devices WHERE token = ?")
+      .get(token);
+    if (device) {
+      deviceTokens[token] = { deviceName: device.device_name || device.deviceName, deviceType: device.device_type || device.deviceType };
+      req.deviceName = device.device_name || device.deviceName;
+      req.deviceType = device.device_type || device.deviceType || "desktop_client";
+      try {
+        db.prepare("UPDATE paired_devices SET last_seen = CURRENT_TIMESTAMP WHERE token = ?").run(token);
+      } catch {}
+      return next();
+    }
+    return res.status(401).json({ success: false, error: "No autorizado" });
   };
+
+  // ─── Emparejamiento de cajas cliente ─────────────────────────
+  app.post("/api/auth/pair-device", safe(async (req, res) => {
+    const { activationCode, token, code, deviceName, deviceType } = req.body || {};
+    const provided = String(activationCode || token || code || "").trim().toUpperCase();
+    if (!provided) return res.status(400).json({ success: false, error: "Código de activación requerido" });
+
+    const row = db
+      .prepare("SELECT value FROM settings WHERE key = 'activation_code'")
+      .get();
+    if (!row || String(row.value).trim().toUpperCase() !== provided) {
+      return res.status(401).json({ success: false, error: "Código de activación inválido" });
+    }
+
+    const deviceToken = crypto.randomBytes(32).toString("hex");
+    const type = deviceType || "desktop_client";
+    db.prepare(
+      "INSERT INTO paired_devices (device_name, device_type, token) VALUES (?, ?, ?)",
+    ).run(deviceName || "Caja Cliente", type, deviceToken);
+    deviceTokens[deviceToken] = { deviceName: deviceName || "Caja Cliente", deviceType: type };
+
+    res.json({
+      success: true,
+      token: deviceToken,
+      device: { name: deviceName || "Caja Cliente", type },
+    });
+  }, true));
+
+  app.get("/api/auth/paired-devices", requireAuth, safe((req, res) => {
+    const devices = db
+      .prepare("SELECT id, device_name, device_type, created_at, last_seen FROM paired_devices ORDER BY created_at DESC")
+      .all();
+    res.json({ success: true, devices });
+  }));
 
   // IMPORTANT: /search must come BEFORE :barcode or Express matches "search" as barcode
   app.get("/api/products/search", requireAuth, safe((req, res) => {
@@ -181,6 +316,179 @@ const startServer = async (db, port = 3456) => {
   app.get("/api/categories", requireAuth, safe((req, res) => {
     const categories = db.prepare("SELECT id, name FROM categories ORDER BY name").all();
     res.json({ success: true, categories });
+  }));
+
+  // ─── Catálogo completo ───────────────────────────────────────
+  app.get("/api/products", requireAuth, safe((req, res) => {
+    const products = db
+      .prepare(
+        `SELECT p.*, c.name as category_name, s.name as supplier_name
+         FROM products p
+         LEFT JOIN categories c ON p.category_id = c.id
+         LEFT JOIN suppliers s ON p.supplier_id = s.id
+         WHERE p.is_active = 1
+         ORDER BY p.name`,
+      )
+      .all();
+    res.json({ success: true, products });
+  }));
+
+  app.get("/api/customers", requireAuth, safe((req, res) => {
+    try {
+      const customers = db.prepare("SELECT * FROM customers ORDER BY name").all();
+      res.json({ success: true, customers });
+    } catch {
+      res.json({ success: true, customers: [] });
+    }
+  }));
+
+  // ─── Ventas ──────────────────────────────────────────────────
+  const recordSaleTx = ({ cart, total, paymentMethod, discountTotal, cashierName }) => {
+    const txn = db.transaction(() => {
+      const openReg = db
+        .prepare("SELECT id FROM cash_register WHERE status = 'open' ORDER BY opened_at DESC, id DESC LIMIT 1")
+        .get();
+      const registerId = openReg ? openReg.id : null;
+
+      const saleInfo = db
+        .prepare(
+          "INSERT INTO sales (total, payment_method, discount_total, register_id, cashier_name) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(total, paymentMethod || "cash", discountTotal || 0, registerId, cashierName || "Usuario Principal");
+      const saleId = saleInfo.lastInsertRowid;
+
+      const itemStmt = db.prepare(
+        "INSERT INTO sale_items (sale_id, product_id, product_name, quantity, price_at_sale, discount_percent, stock_deducted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      );
+      const stockStmt = db.prepare(
+        "UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?",
+      );
+
+      for (const item of cart) {
+        const isManual = item.isManual || typeof item.id !== "number";
+        const productId = isManual ? null : item.id;
+        const productName = item.name || (isManual ? "Producto manual" : null);
+        let stockDeducted = 0;
+        if (!isManual) {
+          stockDeducted = item.isBoxItem
+            ? item.quantity * (item.box_qty || 1)
+            : item.isPackItem
+              ? item.quantity * (item.pack_qty || 1)
+              : item.quantity;
+        }
+        itemStmt.run(saleId, productId, productName, item.quantity, item.finalPrice || item.price, item.discount_percent || 0, stockDeducted);
+        if (!isManual) {
+          const r = stockStmt.run(stockDeducted, item.id, stockDeducted);
+          if (r.changes === 0) {
+            throw new Error(`Stock insuficiente para el producto ID: ${item.id}`);
+          }
+        }
+      }
+      return saleId;
+    });
+    return txn();
+  };
+
+  app.post("/api/sales", requireAuth, safe((req, res) => {
+    const { cart, total, paymentMethod, discountTotal, cashierName } = req.body || {};
+    if (!Array.isArray(cart) || cart.length === 0)
+      return res.status(400).json({ success: false, error: "Carrito vacío" });
+    if (total == null || isNaN(Number(total)))
+      return res.status(400).json({ success: false, error: "Total inválido" });
+    try {
+      const saleId = recordSaleTx({ cart, total, paymentMethod, discountTotal, cashierName });
+      res.json({ success: true, saleId });
+    } catch (err) {
+      res.status(409).json({ success: false, error: err.message });
+    }
+  }));
+
+  app.get("/api/sales", requireAuth, safe((req, res) => {
+    const { from, to, limit } = req.query;
+    let sql = "SELECT * FROM sales WHERE 1=1";
+    const params = [];
+    if (from) { sql += " AND created_at >= ?"; params.push(from); }
+    if (to) { sql += " AND created_at <= ?"; params.push(to); }
+    sql += " ORDER BY created_at DESC LIMIT ?";
+    params.push(parseInt(limit) || 200);
+    const sales = db.prepare(sql).all(...params);
+    res.json({ success: true, sales });
+  }));
+
+  // ─── Sincronización (lotes en diferido) ───────────────────────
+  app.post("/api/sync/sales", requireAuth, safe((req, res) => {
+    const { sales } = req.body || {};
+    if (!Array.isArray(sales) || sales.length === 0)
+      return res.status(400).json({ success: false, error: "Sin ventas para sincronizar" });
+
+    const results = [];
+    for (const sale of sales) {
+      try {
+        const saleId = recordSaleTx({
+          cart: sale.cart,
+          total: sale.total,
+          paymentMethod: sale.paymentMethod,
+          discountTotal: sale.discountTotal,
+          cashierName: sale.cashierName,
+        });
+        results.push({ success: true, saleId, localId: sale.localId ?? null });
+      } catch (err) {
+        results.push({ success: false, error: err.message, localId: sale.localId ?? null });
+      }
+    }
+    res.json({ success: true, results });
+  }));
+
+  // ─── Caja (apertura, cierre, arqueos) ────────────────────────
+  app.get("/api/cash-shifts", requireAuth, safe((req, res) => {
+    const shifts = db
+      .prepare("SELECT * FROM cash_register ORDER BY opened_at DESC LIMIT 100")
+      .all();
+    res.json({ success: true, shifts });
+  }));
+
+  app.get("/api/cash-shifts/current", requireAuth, safe((req, res) => {
+    const open = db
+      .prepare("SELECT * FROM cash_register WHERE status = 'open' ORDER BY opened_at DESC, id DESC LIMIT 1")
+      .get();
+    res.json({ success: true, shift: open || null });
+  }));
+
+  app.post("/api/cash-shifts", requireAuth, safe((req, res) => {
+    const { openingBalance, cashierId, cashierName } = req.body || {};
+    const existing = db
+      .prepare("SELECT id FROM cash_register WHERE status = 'open' LIMIT 1")
+      .get();
+    if (existing)
+      return res.status(409).json({ success: false, error: "Ya hay una caja abierta" });
+    const mxToday = new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
+    const info = db
+      .prepare(
+        "INSERT INTO cash_register (date, opening_balance, status, cashier_id, opened_by) VALUES (?, ?, 'open', ?, ?)",
+      )
+      .run(mxToday, parseFloat(openingBalance) || 0, cashierId || null, cashierId || null);
+    const shift = db.prepare("SELECT * FROM cash_register WHERE id = ?").get(info.lastInsertRowid);
+    res.json({ success: true, shift });
+  }));
+
+  app.patch("/api/cash-shifts/:id/close", requireAuth, safe((req, res) => {
+    const id = parseInt(req.params.id);
+    const { declaredClose } = req.body || {};
+    const shift = db.prepare("SELECT * FROM cash_register WHERE id = ? AND status = 'open'").get(id);
+    if (!shift) return res.status(404).json({ success: false, error: "Caja no encontrada o ya cerrada" });
+    const sales = db
+      .prepare(
+        "SELECT payment_method, COALESCE(SUM(total),0) as total FROM sales WHERE register_id = ? AND (status IS NULL OR status != 'cancelado') GROUP BY payment_method",
+      )
+      .all(id);
+    const cashSales = sales.find((s) => s.payment_method === "cash")?.total || 0;
+    const expected = Number(shift.opening_balance || 0) + cashSales - Number(shift.expenses || 0);
+    const declared = parseFloat(declaredClose) || 0;
+    db.prepare(
+      "UPDATE cash_register SET status = 'closed', closed_at = CURRENT_TIMESTAMP, expected_close = ?, declared_close = ?, difference = ? WHERE id = ?",
+    ).run(expected, declared, declared - expected, id);
+    const updated = db.prepare("SELECT * FROM cash_register WHERE id = ?").get(id);
+    res.json({ success: true, shift: updated });
   }));
 
   const MAX_ATTEMPTS = 3;

@@ -31,11 +31,11 @@ npm start
 ### Build para distribución
 
 ```bash
-# Crear instalador (.exe en Windows)
+# Crear instalador Squirrel (.exe) y paquete ZIP
 npm run make
 ```
 
-El ejecutable se genera en `out/make/`.
+Los artefactos se generan en `out/make/`. En Windows, el `Setup.exe` de Squirrel puede ser bloqueado por políticas de Control de aplicaciones cuando intenta iniciar su autoactualizador. Como alternativa, se genera también un ZIP de Windows que no ejecuta Squirrel: extrae su contenido y abre `JRP POS.exe`. Si la política de la computadora bloquea también la aplicación, solicita al administrador de TI que autorice el ejecutable/editor; no desactives la política.
 
 ## Instalación — App Móvil
 
@@ -56,9 +56,15 @@ Escanea el código QR con Expo Go (SDK 57 beta) para abrir la app.
 ### Primera ejecución (escritorio)
 
 1. Al abrir la app por primera vez, aparece el asistente de configuración
-2. Ingresa el nombre del negocio
-3. Crea el primer cajero (admin)
-4. La app crea automáticamente la base de datos SQLite
+2. En la caja principal, selecciona **Caja Principal** y configura el negocio y el primer cajero administrador
+3. La app crea automáticamente la base de datos SQLite e inicia el servidor Host en el puerto **3456**
+
+### Conectar una caja adicional
+
+1. En la caja Host, toma la IP y el puerto que aparecen junto a **SERVIDOR** en la barra superior.
+2. En la caja Host, inicia sesión como administrador, abre **Configuración** y copia el **Código de activación del Host**. Solo se muestra a administradores. No necesitas abrir DevTools ni usar el modo desarrollo.
+3. En la caja adicional, selecciona **Caja Adicional** e ingresa la IP/puerto y el código. La app validará la conexión y cargará el nombre de la tienda y los usuarios activos del Host.
+4. Los usuarios del Cliente inician sesión con su PIN del Host; los PIN no se copian a la caja Cliente.
 
 ### Conexión móvil ↔ escritorio
 

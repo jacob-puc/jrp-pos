@@ -89,6 +89,7 @@ const Layout = () => {
   const [shortcutsDialogOpen, setShortcutsDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [serverRunning, setServerRunning] = useState(false);
+  const [serverAddress, setServerAddress] = useState("");
   const { cashier, logout } = useCashier();
   const [registerOpen, setRegisterOpen] = useState(false);
   const [handover, setHandover] = useState(null);
@@ -270,8 +271,10 @@ const Layout = () => {
       try {
         const status = await window.api.invoke("get-server-status");
         setServerRunning(status.running);
+        setServerAddress(status.running && status.ip ? `${status.ip}:${status.port}` : "");
       } catch (e) {
         setServerRunning(false);
+        setServerAddress("");
       }
     };
     checkServer();
@@ -801,7 +804,7 @@ const Layout = () => {
               <Tooltip
                 title={
                   serverRunning
-                    ? "Servidor activo · Puerto 3456"
+                    ? `Servidor activo · http://${serverAddress}`
                     : "Servidor desconectado"
                 }
               >
@@ -854,7 +857,9 @@ const Layout = () => {
                       lineHeight: 1,
                     }}
                   >
-                    SERVIDOR
+                    {serverRunning && serverAddress
+                      ? `SERVIDOR · ${serverAddress}`
+                      : "SERVIDOR"}
                   </Typography>
                 </Box>
               </Tooltip>
@@ -1331,6 +1336,7 @@ const Layout = () => {
       <StoreSettingsDialog
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        isAdmin={cashier?.role === "admin"}
       />
 
       <Dialog

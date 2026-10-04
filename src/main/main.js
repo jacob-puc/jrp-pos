@@ -10,7 +10,9 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 const Database = require("better-sqlite3");
+const dataService = require("./data-service");
 
 const dbDir = path.join(app.getPath("userData"), "db");
 if (!fs.existsSync(dbDir)) {
@@ -99,6 +101,33 @@ const createTables = () => {
     quantity INTEGER NOT NULL,
     price_at_sale REAL NOT NULL,
     discount_percent REAL DEFAULT 0
+  )`);
+
+  db.exec(`CREATE TABLE IF NOT EXISTS paired_devices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_name TEXT,
+    device_type TEXT DEFAULT 'desktop_client',
+    token TEXT UNIQUE NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_seen DATETIME
+  )`);
+
+  db.exec(`CREATE TABLE IF NOT EXISTS customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    phone TEXT,
+    email TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  db.exec(`CREATE TABLE IF NOT EXISTS pending_sync_sales (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    local_id TEXT,
+    payload TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    error TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    synced_at DATETIME
   )`);
 
   db.exec(`CREATE TABLE IF NOT EXISTS settings (
@@ -249,6 +278,7 @@ const createTables = () => {
 };
 
 createTables();
+dataService.init(db, app.getPath("userData"));
 
 const runMigrations = () => {
   // ─── ÍNDICES ──────────────────────────────────────────────────
@@ -514,6 +544,19 @@ const createMainWindow = () => {
     },
   });
 
+  mainWin.webContents.on("before-input-event", (event, input) => {
+    if (
+      !app.isPackaged &&
+      input.type === "keyDown" &&
+      input.control &&
+      input.shift &&
+      input.key.toLowerCase() === "i"
+    ) {
+      event.preventDefault();
+      mainWin.webContents.openDevTools({ mode: "detach" });
+    }
+  });
+
   mainWin.on("close", (e) => {
     if (!isQuitting) {
       e.preventDefault();
@@ -541,7 +584,7 @@ const createMainWindow = () => {
 };
 
 app.on("ready", () => {
-  // Sin menú de aplicación: evita recargas accidentales (Ctrl+R) y devtools
+  // Sin menú de aplicación: evita recargas accidentales (Ctrl+R).
   Menu.setApplicationMenu(null);
   migrateLegacyBackups();
   maybeRunAutoBackup();
@@ -554,14 +597,23 @@ app.on("ready", () => {
   // apertura también sea rápida (no bloquea el arranque).
   ensureDrawerWorker().catch(() => {});
 
-  // Start local API server for mobile app
+  // Start local API server (solo en cajas Host; una caja Cliente no
+  // levanta el servidor, opera como cliente contra el Host).
   (async () => {
-    const result = await apiServer.startServer(db, 3456);
-    if (result.success) {
-      await discovery.startDiscovery(3456);
-      console.log(`Mobile API ready on port ${3456}`);
+    const modeRow = db
+      .prepare("SELECT value FROM settings WHERE key = 'app_mode'")
+      .get();
+    const mode = modeRow ? modeRow.value : "host";
+    if (mode === "host") {
+      const result = await apiServer.startServer(db, 3456);
+      if (result.success) {
+        await discovery.startDiscovery(3456);
+        console.log(`Mobile API ready on port ${3456}`);
+      } else {
+        console.error("Failed to start mobile API:", result.error);
+      }
     } else {
-      console.error("Failed to start mobile API:", result.error);
+      console.log("Modo CLIENTE: sin servidor API local; usando caché local + API del Host.");
     }
   })();
 
@@ -625,6 +677,7 @@ app.on("before-quit", () => {
   destroyDrawerWorker();
   apiServer.stopServer();
   discovery.stopDiscovery();
+  dataService.stopSyncWorker();
 });
 
 app.on("window-all-closed", () => {
@@ -1402,12 +1455,11 @@ ipcMain.handle(
       const qty = parseInt(quantity, 10);
       if (!Number.isInteger(qty) || qty <= 0)
         throw new Error("Cantidad inválida");
-      if (product.stock < qty)
-        throw new Error("Stock insuficiente");
-      db.prepare("UPDATE products SET stock = stock - ? WHERE id = ?").run(
-        qty,
-        productId,
-      );
+      const res = db
+        .prepare("UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?")
+        .run(qty, productId, qty);
+      if (res.changes === 0)
+        throw new Error(`Stock insuficiente para el producto ID: ${productId}`);
       db.prepare(
         "INSERT INTO stock_movements (product_id, type, quantity, notes, cashier_id) VALUES (?, 'out', ?, ?, ?)",
       ).run(productId, qty, notes || "Salida de stock", cashierId || null);
@@ -1652,7 +1704,7 @@ ipcMain.handle(
         "INSERT INTO sale_items (sale_id, product_id, product_name, quantity, price_at_sale, discount_percent, stock_deducted) VALUES (?, ?, ?, ?, ?, ?, ?)",
       );
       const stockStmt = db.prepare(
-        "UPDATE products SET stock = stock - ? WHERE id = ?",
+        "UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?",
       );
 
       for (const item of cart) {
@@ -1679,15 +1731,12 @@ ipcMain.handle(
           stockDeducted,
         );
         if (!isManual) {
-          const prod = db
-            .prepare("SELECT stock FROM products WHERE id = ?")
-            .get(item.id);
-          if (!prod || prod.stock < stockDeducted) {
+          const res = stockStmt.run(stockDeducted, item.id, stockDeducted);
+          if (res.changes === 0) {
             throw new Error(
-              `Stock insuficiente para "${productName}". Quedan ${prod ? prod.stock : 0}`,
+              `Stock insuficiente para el producto ID: ${item.id}`,
             );
           }
-          stockStmt.run(stockDeducted, item.id);
         }
       }
       return { success: true, saleId };
@@ -2232,8 +2281,168 @@ ipcMain.handle("get-expenses-by-date", async (event, { date }) => {
 
 // ─── SETTINGS ───────────────────────────────────────────────
 
+// Código de activación que el Host muestra y el cliente desktop usa
+// para vincularse (POST /api/auth/pair-device).
+ipcMain.handle("get-activation-code", async () => {
+  try {
+    let row = db
+      .prepare("SELECT value FROM settings WHERE key = 'activation_code'")
+      .get();
+    if (!row) {
+      const code = crypto.randomBytes(4).toString("hex").toUpperCase();
+      db.prepare(
+        "INSERT INTO settings (key, value) VALUES ('activation_code', ?)",
+      ).run(code);
+      row = { value: code };
+    }
+    return { success: true, code: row.value };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+const normalizeHostUrl = (hostUrl) => {
+  let url = String(hostUrl || "").trim();
+  if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
+  if (!/:\d+(\/|$)/.test(url.replace(/^https?:\/\//i, ""))) url += ":3456";
+  return url.replace(/\/$/, "");
+};
+
+const requestPairedHost = async (pathname, options = {}) => {
+  const token = db
+    .prepare("SELECT value FROM settings WHERE key = 'host_token'")
+    .get()?.value;
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (token) headers.Authorization = token;
+  const response = await fetch(`${dataService.getHostUrl()}${pathname}`, {
+    ...options,
+    headers,
+    signal: options.signal || AbortSignal.timeout(8000),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(data?.error || `Error HTTP ${response.status}`);
+  return data;
+};
+
+ipcMain.handle("get-host-setup-info", async (event, { hostUrl, activationCode } = {}) => {
+  try {
+    if (!hostUrl || !activationCode) {
+      return { success: false, error: "IP del Host y código de activación requeridos" };
+    }
+    const url = normalizeHostUrl(hostUrl);
+    const response = await fetch(`${url}/api/auth/host-info`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ activationCode }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data?.success) {
+      return { success: false, error: data?.error || `Error HTTP ${response.status}` };
+    }
+    return data;
+  } catch (error) {
+    return { success: false, error: `No se pudo conectar al Host: ${error.message}` };
+  }
+});
+
+ipcMain.handle("regenerate-activation-code", async () => {
+  try {
+    const code = crypto.randomBytes(4).toString("hex").toUpperCase();
+    db.prepare(
+      "INSERT OR REPLACE INTO settings (key, value) VALUES ('activation_code', ?)",
+    ).run(code);
+    return { success: true, code };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("set-app-mode", async (event, mode) => {
+  try {
+    dataService.setMode(mode);
+    const currentMode = dataService.getMode();
+    if (currentMode === "client") {
+      discovery.stopDiscovery();
+      apiServer.stopServer();
+    } else {
+      if (!apiServer.getStatus().running) {
+        const result = await apiServer.startServer(db, 3456);
+        if (!result.success) throw new Error(result.error);
+      }
+      if (!discovery.getStatus().running) {
+        const result = await discovery.startDiscovery(3456);
+        if (!result.success) throw new Error(result.error);
+      }
+    }
+    return { success: true, mode: currentMode };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("get-app-mode", async () => ({
+  success: true,
+  mode: dataService.getMode(),
+  hostUrl: dataService.getHostUrl(),
+  offline: dataService.isOffline(),
+  pendingSyncSales: dataService.getPendingCount(),
+}));
+
+ipcMain.handle("sync-now", async () => {
+  try {
+    return await dataService.syncPendingSales();
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Vincula esta caja (Cliente) con el Host: canjea el código de activación
+// por un token persistente y guarda la URL/token en settings.
+ipcMain.handle("pair-with-host", async (event, { hostUrl, activationCode } = {}) => {
+  try {
+    if (!hostUrl || !activationCode)
+      return { success: false, error: "IP del Host y código requeridos" };
+    const url = normalizeHostUrl(hostUrl);
+
+    const res = await fetch(`${url}/api/auth/pair-device`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        activationCode,
+        deviceName: "Caja Cliente Desktop",
+        deviceType: "desktop_client",
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success)
+      return {
+        success: false,
+        error: data?.details
+          ? `${data.error || "Error del Host"}: ${data.details}`
+          : data?.error || `Error HTTP ${res.status}`,
+      };
+
+    dataService.setHost(url, data.token);
+    return { success: true, hostUrl: url };
+  } catch (error) {
+    return { success: false, error: `No se pudo conectar al Host: ${error.message}` };
+  }
+});
+
+ipcMain.handle("set-host-connection", async (event, { url, token } = {}) => {
+  try {
+    dataService.setHost(url, token);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 ipcMain.handle("get-setting", async (event, key) => {
   try {
+    if (key === "activation_code" || key === "host_token") return null;
     const setting = db
       .prepare("SELECT value FROM settings WHERE key = ?")
       .get(key);
@@ -2256,7 +2465,9 @@ ipcMain.handle("save-setting", async (event, key, value) => {
 
 ipcMain.handle("get-all-settings", async () => {
   try {
-    const rows = db.prepare("SELECT key, value FROM settings").all();
+    const rows = db
+      .prepare("SELECT key, value FROM settings WHERE key NOT IN ('activation_code', 'host_token')")
+      .all();
     const result = {};
     for (const row of rows) result[row.key] = row.value;
     return result;
@@ -2270,6 +2481,7 @@ ipcMain.handle("get-server-status", () => {
   return {
     running: api.running,
     port: api.port || 3456,
+    ip: api.running ? discovery.getLocalIP() : null,
   };
 });
 
@@ -2277,10 +2489,15 @@ ipcMain.handle("get-server-status", () => {
 
 ipcMain.handle("get-cashiers", async () => {
   try {
+    if (dataService.getMode() === "client") {
+      const response = await requestPairedHost("/api/cashiers");
+      return response.cashiers || [];
+    }
     return db
       .prepare("SELECT id, name, role, is_active FROM cashiers ORDER BY name")
       .all();
   } catch (error) {
+    console.error("Error loading cashiers:", error.message);
     return [];
   }
 });
@@ -2323,6 +2540,13 @@ ipcMain.handle("update-cashier", async (event, id, cashier) => {
 
 ipcMain.handle("verify-cashier-pin", async (event, id, pin) => {
   try {
+    if (dataService.getMode() === "client") {
+      const response = await requestPairedHost("/api/auth/verify", {
+        method: "POST",
+        body: JSON.stringify({ id, pin }),
+      });
+      return { success: true, cashier: response.cashier };
+    }
     const cashier = db
       .prepare("SELECT id, name, pin, role FROM cashiers WHERE id = ?")
       .get(id);
@@ -2675,9 +2899,16 @@ ipcMain.handle(
           );
         }
         if (expense.product_id && (expense.quantity || 0) > 0) {
-          db.prepare(
-            "UPDATE products SET stock = stock - ? WHERE id = ?",
-          ).run(expense.quantity, expense.product_id);
+          const res = db
+            .prepare(
+              "UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?",
+            )
+            .run(expense.quantity, expense.product_id, expense.quantity);
+          if (res.changes === 0) {
+            throw new Error(
+              `Stock insuficiente para el producto ID: ${expense.product_id}`,
+            );
+          }
           db.prepare(
             "INSERT INTO stock_movements (product_id, type, quantity, reference, notes, cashier_id) VALUES (?, 'out', ?, ?, ?, ?)",
           ).run(
