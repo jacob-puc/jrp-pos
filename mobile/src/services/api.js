@@ -7,6 +7,19 @@ let authToken = null;
 const API_PORT = 3456;
 const TOKEN_KEY = "pos_auth_token";
 const HOST_KEY = "pos_host";
+const DEVICE_TOKEN_KEY = "pos_device_token";
+
+const buildUrl = (host) => {
+  const h = String(host || "").trim();
+  if (!h) return null;
+  if (/^https?:\/\//i.test(h)) {
+    try {
+      const u = new URL(h);
+      return `${u.origin}`;
+    } catch {}
+  }
+  return `http://${h}:${API_PORT}`;
+};
 
 const probeIP = async (ip, timeout = 1500) => {
   try {
@@ -57,22 +70,60 @@ const loadSavedHost = async () => {
   try {
     const host = await SecureStore.getItemAsync(HOST_KEY);
     const token = await SecureStore.getItemAsync(TOKEN_KEY);
-    if (host) baseURL = `http://${host}:${API_PORT}`;
-    if (token) authToken = token;
-    return { host, token };
+    const deviceToken = await SecureStore.getItemAsync(DEVICE_TOKEN_KEY);
+    if (host) baseURL = buildUrl(host);
+    if (deviceToken) authToken = deviceToken;
+    else if (token) authToken = token;
+    return { host, token: authToken };
   } catch {
     return { host: null, token: null };
   }
 };
 
-export const initialize = async () => {
+export const setHost = async (host) => {
+  const url = buildUrl(host);
+  if (!url) throw new Error("Host inválido");
+  baseURL = url;
+  await SecureStore.setItemAsync(HOST_KEY, host.replace(/^https?:\/\//i, "").replace(`:${API_PORT}`, ""));
+};
+
+export const pairWithHost = async (activationCode, deviceName = "Caja Móvil") => {
+  if (!baseURL) throw new Error("No hay servidor configurado");
+  const res = await fetch(`${baseURL}/api/auth/pair-device`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ activationCode, deviceName, deviceType: "mobile" }),
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error || "Error al emparejar");
+  authToken = data.token;
+  await SecureStore.setItemAsync(DEVICE_TOKEN_KEY, data.token);
+  await SecureStore.setItemAsync(TOKEN_KEY, data.token);
+  return { success: true, token: data.token };
+};
+
+export const initialize = async (manualHost = null) => {
+  if (manualHost) {
+    try {
+      await setHost(manualHost);
+    } catch {}
+  }
+
   const saved = await loadSavedHost();
-  if (saved.host) {
-    baseURL = `http://${saved.host}:${API_PORT}`;
-    // Test connection
+  if (saved.host || manualHost) {
+    if (!baseURL) baseURL = buildUrl(saved.host || manualHost);
+    // Test connection - probar con auth actual o sin auth en endpoint que responda
+    try {
+      const test = await fetch(`${baseURL}/api/db-version`, {
+        headers: authToken ? { Authorization: authToken } : {},
+        signal: AbortSignal.timeout(3000),
+      });
+      if (test.ok) return { connected: true };
+    } catch {}
     try {
       const test = await fetch(`${baseURL}/api/auth`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pin: "test" }),
         signal: AbortSignal.timeout(3000),
       });
@@ -82,7 +133,7 @@ export const initialize = async () => {
 
   const serverIP = await discover();
   if (serverIP) {
-    baseURL = `http://${serverIP}:${API_PORT}`;
+    baseURL = buildUrl(serverIP);
     await SecureStore.setItemAsync(HOST_KEY, serverIP);
     return { connected: true, discovered: true };
   }
@@ -117,8 +168,13 @@ const apiFetch = async (path, options = {}) => {
   const data = await res.json();
 
   if (res.status === 401) {
-    authToken = null;
     await SecureStore.deleteItemAsync(TOKEN_KEY);
+    try {
+      const deviceToken = await SecureStore.getItemAsync(DEVICE_TOKEN_KEY);
+      authToken = deviceToken || null;
+    } catch {
+      authToken = null;
+    }
     throw new Error("Sesión expirada");
   }
 
@@ -152,8 +208,13 @@ export const addStock = (productId, quantity, cost = "", notes = "", registerExp
 export const getCategories = () => apiFetch("/api/categories");
 
 export const logout = async () => {
-  authToken = null;
   await SecureStore.deleteItemAsync(TOKEN_KEY);
+  try {
+    const deviceToken = await SecureStore.getItemAsync(DEVICE_TOKEN_KEY);
+    authToken = deviceToken || null;
+  } catch {
+    authToken = null;
+  }
 };
 
 export const resetConnection = async () => {
@@ -161,4 +222,15 @@ export const resetConnection = async () => {
   authToken = null;
   await SecureStore.deleteItemAsync(TOKEN_KEY);
   await SecureStore.deleteItemAsync(HOST_KEY);
+  await SecureStore.deleteItemAsync(DEVICE_TOKEN_KEY);
+};
+
+export const getConnectionInfo = async () => {
+  try {
+    const host = await SecureStore.getItemAsync(HOST_KEY);
+    const hasToken = !!(await SecureStore.getItemAsync(DEVICE_TOKEN_KEY));
+    return { host: host || null, paired: hasToken, baseURL };
+  } catch {
+    return { host: null, paired: false, baseURL };
+  }
 };

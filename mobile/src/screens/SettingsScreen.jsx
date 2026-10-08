@@ -1,24 +1,57 @@
 import React, { useState, useEffect } from "react";
 import { View, StyleSheet, ScrollView } from "react-native";
-import { Text, SegmentedButtons, Card, useTheme, Divider, Button } from "react-native-paper";
+import { Text, SegmentedButtons, Card, useTheme, Divider, Button, TextInput } from "react-native-paper";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import ScreenHeader from "../components/ScreenHeader";
 import { getScanMode, setScanMode } from "../utils/scanSettings";
+import { getConnectionInfo, resetConnection, setHost, pairWithHost } from "../services/api";
 
 const SettingsScreen = ({ cashier, onLogout }) => {
   const theme = useTheme();
   const [scanMode, setModeState] = useState("auto");
+  const [conn, setConn] = useState({ host: null, paired: false, baseURL: null });
+  const [host, setHostInput] = useState("");
+  const [code, setCode] = useState("");
+  const [pairing, setPairing] = useState(false);
+  const [msg, setMsg] = useState("");
 
   useEffect(() => {
     (async () => {
       const mode = await getScanMode();
       setModeState(mode);
+      const c = await getConnectionInfo();
+      setConn(c);
+      if (c.host) setHostInput(c.host);
     })();
   }, []);
 
   const handleModeChange = async (newMode) => {
     setModeState(newMode);
     await setScanMode(newMode);
+  };
+
+  const handlePair = async () => {
+    setMsg("");
+    if (!host.trim() || !code.trim()) return setMsg("Completa host y código");
+    setPairing(true);
+    try {
+      await setHost(host.trim());
+      await pairWithHost(code.trim().toUpperCase());
+      const c = await getConnectionInfo();
+      setConn(c);
+      setMsg("Vinculado correctamente");
+    } catch (e) {
+      setMsg(e.message || "Error al vincular");
+    } finally {
+      setPairing(false);
+    }
+  };
+
+  const handleReset = async () => {
+    await resetConnection();
+    const c = await getConnectionInfo();
+    setConn(c);
+    setMsg("Conexión restablecida");
   };
 
   return (
@@ -72,6 +105,58 @@ const SettingsScreen = ({ cashier, onLogout }) => {
                 </Text>
               </View>
             )}
+          </Card.Content>
+        </Card>
+
+        <Card style={[styles.card, { backgroundColor: theme.colors.surface, marginTop: 16 }]}>
+          <Card.Content>
+            <View style={styles.cardHeader}>
+              <MaterialCommunityIcons name="lan-connect" size={24} color={theme.colors.primary} />
+              <Text variant="titleMedium" style={{ fontWeight: "700", color: theme.colors.onSurface, marginLeft: 8 }}>
+                Conexión
+              </Text>
+            </View>
+            <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 13, marginTop: 4, marginBottom: 8 }}>
+              Host: {conn.host || conn.baseURL || "No configurado"}
+            </Text>
+            <Text style={{ color: theme.colors.onSurfaceVariant, fontSize: 13, marginBottom: 12 }}>
+              Estado: {conn.paired ? "Vinculado" : "No vinculado"}
+            </Text>
+            <TextInput
+              label="IP/Host del servidor"
+              value={host}
+              onChangeText={setHostInput}
+              mode="outlined"
+              style={{ marginBottom: 8 }}
+              autoCapitalize="none"
+            />
+            <TextInput
+              label="Código de activación"
+              value={code}
+              onChangeText={setCode}
+              mode="outlined"
+              autoCapitalize="characters"
+              style={{ marginBottom: 8 }}
+            />
+            {msg ? <Text style={{ color: theme.colors.primary, marginBottom: 8 }}>{msg}</Text> : null}
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Button
+                mode="contained"
+                onPress={handlePair}
+                loading={pairing}
+                disabled={pairing}
+                style={{ flex: 1 }}
+              >
+                Vincular
+              </Button>
+              <Button
+                mode="outlined"
+                onPress={handleReset}
+                style={{ flex: 1 }}
+              >
+                Restablecer
+              </Button>
+            </View>
           </Card.Content>
         </Card>
 
