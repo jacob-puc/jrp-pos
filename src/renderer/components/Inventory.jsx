@@ -72,6 +72,7 @@ import { useToast } from "./ToastProvider";
 import { useCashier } from "../contexts/CashierContext";
 import { mxToday, formatMXTime } from "../utils/dateUtils";
 import { isContainerUnit, unitLabels } from "../utils/unitLabels";
+import useDbChanges from "../utils/useDbChanges";
 
 const Inventory = () => {
   const notify = useToast();
@@ -141,8 +142,8 @@ const Inventory = () => {
   const isAnyModalOpenRef = useRef(false);
   isAnyModalOpenRef.current = isAnyModalOpen;
 
-  const fetchProducts = useCallback(async () => {
-    setLoading(true);
+  const fetchProducts = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
       const [result, cats, sups] = await Promise.all([
         window.api.invoke("get-products", {
@@ -180,7 +181,7 @@ const Inventory = () => {
         discountedCount: 0,
       });
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [
     debouncedSearch,
@@ -196,6 +197,9 @@ const Inventory = () => {
   useEffect(() => {
     fetchProducts();
   }, [fetchProducts]);
+
+  // Recarga automática cuando la BD cambia (ventas de otras cajas, sync...)
+  useDbChanges(() => fetchProducts({ silent: true }));
 
   useEffect(() => {
     if (viewDetailsOpen && selectedProduct) {

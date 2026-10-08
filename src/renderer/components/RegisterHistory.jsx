@@ -53,6 +53,7 @@ import {
 import { CardSkeleton } from "./Skeletons";
 import CancelButton from "./CancelButton";
 import { formatMXTime, formatMXDate } from "../utils/dateUtils";
+import useDbChanges from "../utils/useDbChanges";
 import { unitLabels } from "../utils/unitLabels";
 import { jsPDF } from "jspdf";
 import { applyPlugin } from "jspdf-autotable";
@@ -76,8 +77,8 @@ const RegisterHistory = () => {
   const isDark = theme.palette.mode === "dark";
   const isAdmin = cashier?.role === "admin";
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  const fetchData = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     setError(null);
     const result = await window.api.invoke("get-closed-registers", {
       cashierId: cashier?.id,
@@ -92,12 +93,15 @@ const RegisterHistory = () => {
       const cashiersResult = await window.api.invoke("get-cashiers");
       if (Array.isArray(cashiersResult)) setCashiers(cashiersResult);
     }
-    setLoading(false);
+    if (!silent) setLoading(false);
   }, [cashier?.id, cashier?.role, isAdmin]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Recarga automática cuando la BD cambia (cortes hechos en otras cajas...)
+  useDbChanges(() => fetchData({ silent: true }));
 
   // Productos agrupados por venta para el desglose tipo nota
   const itemsBySale = useMemo(() => {

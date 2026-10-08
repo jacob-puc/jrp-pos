@@ -12,6 +12,7 @@ import {
 import { TableSkeleton, CardSkeleton } from "./Skeletons";
 import { formatMXDate, formatMXTime, mxToday, mxWeekRange } from "../utils/dateUtils";
 import { useCashier } from "../contexts/CashierContext";
+import useDbChanges from "../utils/useDbChanges";
 
 const StockMovements = () => {
   const { cashier } = useCashier();
@@ -32,8 +33,8 @@ const StockMovements = () => {
     setProducts(result.products || result);
   }, []);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  const fetchData = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     const params = {};
     if (search) params.search = search.trim();
     if (type) params.type = type;
@@ -43,12 +44,20 @@ const StockMovements = () => {
     if (cashier?.role) params.role = cashier.role;
     const result = await window.api.invoke("get-stock-movements", params);
     setMovements(result);
-    setPage(0);
-    setLoading(false);
+    // En recargas automáticas (silent) no se reinicia la paginación para
+    // no sacar al usuario de la página que está viendo.
+    if (!silent) setPage(0);
+    if (!silent) setLoading(false);
   }, [search, type, startDate, endDate, cashier?.id, cashier?.role]);
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Recarga automática cuando la BD cambia (ventas, entradas, ajustes...)
+  useDbChanges(() => {
+    fetchData({ silent: true });
+    fetchProducts();
+  });
 
   useEffect(() => {
     const today = mxToday();

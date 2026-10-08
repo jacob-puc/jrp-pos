@@ -53,6 +53,7 @@ import { CardSkeleton } from "./Skeletons";
 import CancelButton from "./CancelButton";
 
 import { mxToday, formatMXDateTime, formatMXTime, toUTC } from "../utils/dateUtils";
+import useDbChanges from "../utils/useDbChanges";
 
 import { useCashier } from "../contexts/CashierContext";
 
@@ -147,8 +148,12 @@ const EndOfDay = () => {
   const [turnoSearch, setTurnoSearch] = useState("");
   const turnoSearchRef = React.useRef(null);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  // Evita que el aviso de corte pendiente se reabra solo en cada recarga
+  // automática: se muestra una vez y luego solo si el usuario lo pide.
+  const recoveryPromptedRef = React.useRef(false);
+
+  const fetchData = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
 
     try {
       const regResult = await window.api.invoke("get-cash-register-status", {
@@ -191,7 +196,9 @@ const EndOfDay = () => {
         setWasUnclean(!!recResult.wasUncleanShutdown);
         // Si hay caja de otro día pendiente, pregunta al iniciar si se
         // quiere hacer el corte correspondiente a ese día/horario.
-        if (pend.length > 0) {
+        // En recargas automáticas (silent) no se reabre si ya se mostró.
+        if (pend.length > 0 && (!silent || !recoveryPromptedRef.current)) {
+          recoveryPromptedRef.current = true;
           const first = pend[0];
           setRecoveryTarget(first);
           setRecoveryDeclared("");
@@ -246,13 +253,17 @@ const EndOfDay = () => {
         text: "No se pudo cargar la información de caja.",
       });
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [cashier?.id, cashier?.role]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Recarga automática cuando la BD cambia (ventas de otras cajas, gastos,
+  // cortes...). En silencio: sin skeleton ni reapertura del aviso de corte.
+  useDbChanges(() => fetchData({ silent: true }));
 
   useEffect(() => {
     const handleSaleRegistered = () => fetchData();

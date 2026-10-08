@@ -8,6 +8,7 @@ import React, {
 import { keyframes } from "@emotion/react";
 import { createPortal } from "react-dom";
 import { useCashier } from "../contexts/CashierContext";
+import useDbChanges from "../utils/useDbChanges";
 import {
   Box,
   TextField,
@@ -988,6 +989,66 @@ if (e.key === "Tab" && !isEditable) {
   const showNotification = useCallback((message, severity = "info") => {
     setNotification({ open: true, message, severity });
   }, []);
+
+  // Tiempo real: cuando otra caja (o el Host) vende, entra stock o edita un
+  // producto, se actualiza al instante el stock de las líneas del carrito y
+  // las sugerencias visibles, sin tocar lo que el cajero ya capturó. El
+  // Host sigue siendo quien valida al cobrar (no se puede sobrevender).
+  const liveRef = useRef({ barcode: "", showSuggestions: false });
+  liveRef.current = { barcode, showSuggestions };
+  useDbChanges(async () => {
+    try {
+      const byId = new Map();
+      for (const it of cartRef.current) {
+        if (it && typeof it.id === "number" && !it.isManual && it.barcode) {
+          byId.set(it.id, it.barcode);
+        }
+      }
+      if (byId.size > 0) {
+        const fresh = await Promise.all(
+          [...byId.values()].map((code) =>
+            window.api.invoke("get-product-by-barcode", code).catch(() => null),
+          ),
+        );
+        const stockById = new Map();
+        for (const res of fresh) {
+          const p = res && res.success ? res.product : null;
+          if (p && typeof p.id === "number") stockById.set(p.id, safeNum(p.stock, 0));
+        }
+        if (stockById.size > 0) {
+          const lowered = [];
+          for (const it of cartRef.current) {
+            if (!stockById.has(it.id)) continue;
+            const newStock = stockById.get(it.id);
+            if (newStock !== safeNum(it.stock, 0) && newStock < committedStockInCart(cartRef.current, it)) {
+              lowered.push(`${it.name} (quedan ${newStock})`);
+            }
+          }
+          setCart((prev) =>
+            prev.map((it) =>
+              stockById.has(it.id) && safeNum(it.stock, 0) !== stockById.get(it.id)
+                ? { ...it, stock: stockById.get(it.id) }
+                : it,
+            ),
+          );
+          if (lowered.length > 0) {
+            showNotification(
+              `El stock cambió en otra caja: ${[...new Set(lowered)].join(", ")}`,
+              "warning",
+            );
+          }
+        }
+      }
+      const { barcode: currentBarcode, showSuggestions: suggestionsOpen } = liveRef.current;
+      const query = String(currentBarcode || "").replace(/^\d+\*/g, "");
+      if (suggestionsOpen && query.length >= 3) {
+        const products = await window.api.invoke("search-products", query);
+        if (Array.isArray(products)) setSearchResults(products);
+      }
+    } catch {
+      // sin conexión momentánea: se actualizará con el siguiente evento
+    }
+  }, 150);
 
   const checkRegisterOpen = async () => {
     try {
@@ -2676,12 +2737,29 @@ display: "flex",
                 )}
               </Box>
               <Stack direction="column" spacing={1.5}>
+                <Button
+                  fullWidth
+                  size="large"
+                  variant="outlined"
+                  autoFocus
+                  onClick={() => confirmBoxChoice("piece")}
+                  sx={{ py: 2, fontWeight: 700, fontSize: "0.9rem" }}
+                >
+                  <Stack spacing={0.5} alignItems="center">
+                    <span>Pieza</span>
+                    <Typography
+                      variant="caption"
+                      sx={{ fontWeight: 400, opacity: 0.7 }}
+                    >
+                      ${fmtMoney(piecePriceOf(boxChoiceDialog.product))}
+                    </Typography>
+                  </Stack>
+                </Button>
                 {boxChoiceDialog.product.box_qty > 0 && (
                   <Button
                     fullWidth
                     size="large"
                     variant="outlined"
-                    autoFocus
                     onClick={() => confirmBoxChoice("box")}
                     sx={{
                       py: 2,
@@ -2731,23 +2809,6 @@ display: "flex",
                     </Stack>
                   </Button>
                 )}
-                <Button
-                  fullWidth
-                  size="large"
-                  variant="outlined"
-                  onClick={() => confirmBoxChoice("piece")}
-                  sx={{ py: 2, fontWeight: 700, fontSize: "0.9rem" }}
-                >
-                  <Stack spacing={0.5} alignItems="center">
-                    <span>Pieza</span>
-                    <Typography
-                      variant="caption"
-                      sx={{ fontWeight: 400, opacity: 0.7 }}
-                    >
-                      ${fmtMoney(piecePriceOf(boxChoiceDialog.product))}
-                    </Typography>
-                  </Stack>
-                </Button>
               </Stack>
             </Box>
           )}

@@ -3,6 +3,7 @@ import React, {
   useEffect,
   useCallback,
   useRef,
+  useMemo,
   Suspense,
 } from "react";
 import {
@@ -70,6 +71,7 @@ import StoreSettingsDialog from "./StoreSettingsDialog";
 import { useThemeMode } from "../contexts/ThemeContext";
 import { useCashier } from "../contexts/CashierContext";
 import { formatMXTime } from "../utils/dateUtils";
+import useDbChanges from "../utils/useDbChanges";
 
 const TaskDialog = React.lazy(() => import("./TaskDialog"));
 
@@ -88,8 +90,10 @@ const Layout = () => {
   const { isDark, toggleMode } = useThemeMode();
   const [shortcutsDialogOpen, setShortcutsDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // serverRunning = "enlace OK": servidor activo (caja principal) o conectado
+  // a la caja principal (caja cliente). linkInfo dice cuál de los dos es.
   const [serverRunning, setServerRunning] = useState(false);
-  const [serverAddress, setServerAddress] = useState("");
+  const [linkInfo, setLinkInfo] = useState({ mode: "host", pending: 0 });
   const { cashier, logout } = useCashier();
   const [registerOpen, setRegisterOpen] = useState(false);
   const [handover, setHandover] = useState(null);
@@ -155,6 +159,12 @@ const Layout = () => {
       setRegisterOpen(false);
     }
   }, [cashier?.id, cashier?.role]);
+
+  // Tiempo real: si otra caja abre/cierra la caja registradora, el estado
+  // se actualiza al instante.
+  useDbChanges(() => {
+    checkRegisterStatus();
+  });
 
   const handleHandoverConfirm = useCallback(async () => {
     if (!handover) return;
@@ -267,18 +277,27 @@ const Layout = () => {
     };
     loadStoreSettings();
 
+    // Estado del enlace: en la caja principal indica si el servidor está
+    // activo; en una caja cliente indica si está conectada a la principal.
     const checkServer = async () => {
       try {
+        const appMode = await window.api.invoke("get-app-mode");
+        if (appMode?.mode === "client") {
+          setLinkInfo({ mode: "client", pending: appMode.pendingSyncSales || 0 });
+          setServerRunning(!!appMode.connected);
+          return;
+        }
         const status = await window.api.invoke("get-server-status");
+        setLinkInfo({ mode: "host", pending: 0 });
         setServerRunning(status.running);
-        setServerAddress(status.running && status.ip ? `${status.ip}:${status.port}` : "");
       } catch (e) {
         setServerRunning(false);
-        setServerAddress("");
       }
     };
     checkServer();
-    const serverTimer = setInterval(checkServer, 5000);
+    const serverTimer = setInterval(checkServer, 4000);
+    // El proceso principal avisa al instante cuando se conecta/desconecta.
+    const unsubLink = window.api.on("host-connection", checkServer);
 
     const handleSetupCompleted = (event) => {
       const { storeName: newStoreName } = event.detail;
@@ -295,6 +314,7 @@ const Layout = () => {
 
     return () => {
       clearInterval(serverTimer);
+      if (typeof unsubLink === "function") unsubLink();
       window.removeEventListener("setupCompleted", handleSetupCompleted);
       window.removeEventListener("storeSettingsUpdated", handleSettingsUpdated);
     };
@@ -307,22 +327,55 @@ const Layout = () => {
     return () => clearInterval(timer);
   }, []);
 
+  // Tareas compartidas: el Host decide qué ve y de qué se le avisa a cada
+  // usuario (tareas "para todos" o asignadas a él; el admin ve todas).
+  const taskViewer = useMemo(
+    () => ({ cashierId: cashier?.id ?? null, role: cashier?.role ?? null }),
+    [cashier?.id, cashier?.role],
+  );
+  const reminderOpenRef = useRef(false);
+  reminderOpenRef.current = reminderDialog.open;
+  const notifiedTasksRef = useRef(new Set());
+
+  const loadTodayTasks = useCallback(async () => {
+    try {
+      const result = await window.api.invoke("get-today-tasks", taskViewer);
+      if (result?.success) setTodayTasksCount(result.tasks.length);
+    } catch {}
+  }, [taskViewer]);
+
+  const checkTaskReminders = useCallback(async () => {
+    if (!taskViewer.cashierId || reminderOpenRef.current) return;
+    try {
+      const result = await window.api.invoke("get-due-tasks", taskViewer);
+      if (!result?.success) return;
+      const next = result.tasks.find(
+        (task) => !notifiedTasksRef.current.has(`${task.id}|${task.task_date}|${task.task_time}`),
+      );
+      if (next) {
+        notifiedTasksRef.current.add(`${next.id}|${next.task_date}|${next.task_time}`);
+        setReminderDialog({ open: true, task: next });
+      }
+    } catch {}
+  }, [taskViewer]);
+
   useEffect(() => {
-    const loadTodayTasks = async () => {
+    const tick = () => {
       if (!isVisibleRef.current) return;
-      const result = await window.api.invoke("get-today-tasks");
-      if (result.success) setTodayTasksCount(result.tasks.length);
+      loadTodayTasks();
+      checkTaskReminders();
     };
+    tick();
+    const interval = setInterval(tick, 30000);
+    return () => clearInterval(interval);
+  }, [loadTodayTasks, checkTaskReminders]);
+
+  // Tiempo real: tareas nuevas/asignadas desde otra caja actualizan el
+  // contador y avisan al instante.
+  useDbChanges(() => {
     loadTodayTasks();
-    const interval = setInterval(loadTodayTasks, 30000);
-    const unsubReminder = window.api.on("task-reminder", (task) => {
-      setReminderDialog({ open: true, task });
-    });
-    return () => {
-      clearInterval(interval);
-      if (unsubReminder) unsubReminder();
-    };
-  }, []);
+    checkTaskReminders();
+  });
 
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -519,10 +572,7 @@ const Layout = () => {
     } catch {}
   };
 
-  const refreshTodayTasks = async () => {
-    const today = await window.api.invoke("get-today-tasks");
-    if (today.success) setTodayTasksCount(today.tasks.length);
-  };
+  const refreshTodayTasks = loadTodayTasks;
 
   const drawer = (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -803,9 +853,13 @@ const Layout = () => {
               </Tooltip>
               <Tooltip
                 title={
-                  serverRunning
-                    ? `Servidor activo · http://${serverAddress}`
-                    : "Servidor desconectado"
+                  linkInfo.mode === "client"
+                    ? serverRunning
+                      ? `Conectado a la caja principal${storeName ? ` · ${storeName}` : ""}`
+                      : `Sin conexión con la caja principal${linkInfo.pending ? ` · ${linkInfo.pending} venta(s) por sincronizar` : ""}`
+                    : serverRunning
+                      ? "Servidor activo"
+                      : "Servidor desconectado"
                 }
               >
                 <Box
@@ -857,8 +911,10 @@ const Layout = () => {
                       lineHeight: 1,
                     }}
                   >
-                    {serverRunning && serverAddress
-                      ? `SERVIDOR · ${serverAddress}`
+                    {linkInfo.mode === "client"
+                      ? serverRunning
+                        ? "CONECTADO"
+                        : "SIN CONEXIÓN"
                       : "SERVIDOR"}
                   </Typography>
                 </Box>

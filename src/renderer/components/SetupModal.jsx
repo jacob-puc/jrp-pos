@@ -2,10 +2,11 @@ import React, { useEffect, useState } from "react";
 import { keyframes } from "@emotion/react";
 import {
   Dialog, DialogContent, TextField, Button, Typography, Box, Card, CardContent,
-  Alert, Avatar, Fade, useTheme, InputAdornment, IconButton, CircularProgress,
+  Alert, AlertTitle, Avatar, Fade, useTheme, InputAdornment, IconButton, CircularProgress,
 } from "@mui/material";
 import {
   Store, Person, CheckCircle, LocationOn, ChevronRight, ChevronLeft, Lock, VisibilityOutlined, VisibilityOff,
+  Refresh,
 } from "@mui/icons-material";
 import CancelButton from "./CancelButton";
 
@@ -19,6 +20,21 @@ const checkScale = keyframes`
   60% { transform: scale(1.2) rotate(3deg); }
   100% { transform: scale(1) rotate(0deg); opacity: 1; }
 `;
+
+const shake = keyframes`
+  0%, 100% { transform: translateX(0); }
+  15%, 45%, 75% { transform: translateX(-6px); }
+  30%, 60%, 90% { transform: translateX(6px); }
+`;
+
+// Nombres legibles de los campos para el resumen "falta llenar".
+const FIELD_LABELS = {
+  hostUrl: "Caja principal",
+  activationCode: "Código de activación",
+  storeName: "Nombre de la tienda",
+  ownerName: "Nombre del propietario",
+  adminPin: "PIN de acceso",
+};
 
 const SetupModal = ({ open, onComplete, onClose }) => {
   const theme = useTheme();
@@ -39,6 +55,56 @@ const SetupModal = ({ open, onComplete, onClose }) => {
   const [hostInfo, setHostInfo] = useState(null);
   const [hostInfoLoading, setHostInfoLoading] = useState(false);
   const [hostInfoError, setHostInfoError] = useState("");
+  const [discovering, setDiscovering] = useState(false);
+  const [discoveryDone, setDiscoveryDone] = useState(false);
+  const [discoveredHosts, setDiscoveredHosts] = useState([]);
+  const [discoveryNonce, setDiscoveryNonce] = useState(0);
+  const [shakeKey, setShakeKey] = useState(0);
+
+  const [shaking, setShaking] = useState(false);
+
+  useEffect(() => {
+    if (!shakeKey) return undefined;
+    setShaking(true);
+    const timer = setTimeout(() => setShaking(false), 500);
+    return () => clearTimeout(timer);
+  }, [shakeKey]);
+
+  const missingFields = Object.keys(FIELD_LABELS).filter((field) => errors[field]);
+  const hasErrors = missingFields.length > 0;
+
+  // Busca automáticamente la caja principal en la red al elegir
+  // "Caja Adicional": el usuario solo necesita el código de activación.
+  useEffect(() => {
+    if (!open || formData.mode !== "client") return undefined;
+    let cancelled = false;
+    const run = async () => {
+      setDiscovering(true);
+      try {
+        const result = await window.api.invoke("discover-hosts");
+        if (cancelled) return;
+        const servers = result?.servers || [];
+        setDiscoveredHosts(servers);
+        // El usuario debe confirmar cuál es su caja principal (nunca se
+        // elige sola, para evitar conectarse a la tienda equivocada).
+        setFormData((current) =>
+          servers.some((s) => s.url === current.hostUrl) ? current : { ...current, hostUrl: "" },
+        );
+      } catch {
+        if (!cancelled) setDiscoveredHosts([]);
+      } finally {
+        if (!cancelled) {
+          setDiscovering(false);
+          setDiscoveryDone(true);
+        }
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, formData.mode, discoveryNonce]);
 
   const steps = [
     { label: "Modo", icon: <Store sx={{ fontSize: 16 }} /> },
@@ -71,6 +137,7 @@ const SetupModal = ({ open, onComplete, onClose }) => {
           return;
         }
         setHostInfo(result);
+        setErrors((current) => ({ ...current, activationCode: null, hostUrl: null }));
         setFormData((current) => ({
           ...current,
           storeName: result.storeName || current.storeName,
@@ -96,12 +163,20 @@ const SetupModal = ({ open, onComplete, onClose }) => {
     if (step === 0) {
       if (formData.mode === "client") {
         if (!formData.hostUrl.trim()) {
-          newErrors.hostUrl = "La IP/Host del servidor es requerida";
+          newErrors.hostUrl = discovering
+            ? "Espera a que termine la búsqueda de la caja principal"
+            : discoveredHosts.length > 0
+              ? "Confirma cuál es tu caja principal"
+              : "No se encontró la caja principal. Verifica que esté encendida y reintenta la búsqueda";
         }
         if (!formData.activationCode.trim()) {
           newErrors.activationCode = "El código de activación es requerido";
+        } else if (hostInfoError) {
+          newErrors.activationCode = hostInfoError;
         } else if (!hostInfo) {
-          newErrors.activationCode = "Espera a que se validen los datos del Host";
+          newErrors.activationCode = hostInfoLoading
+            ? "Espera a que se validen los datos de la caja principal"
+            : "Selecciona la caja principal para validar el código";
         }
       }
     }
@@ -130,16 +205,27 @@ const SetupModal = ({ open, onComplete, onClose }) => {
     }
 
     setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    const valid = Object.keys(newErrors).length === 0;
+    if (!valid) setShakeKey((n) => n + 1);
+    return valid;
+  };
+
+  // Validación al salir de un campo obligatorio (feedback inmediato en rojo).
+  const handleBlurRequired = (field, message) => () => {
+    if (!String(formData[field] || "").trim()) {
+      setErrors((current) => ({ ...current, [field]: message }));
+    }
   };
 
   const handleNext = () => {
     if (validateStep(activeStep)) {
+      setErrors({});
       setActiveStep((prevActiveStep) => prevActiveStep + 1);
     }
   };
 
   const handleBack = () => {
+    setErrors({});
     setActiveStep((prevActiveStep) => prevActiveStep - 1);
   };
 
@@ -200,6 +286,21 @@ const SetupModal = ({ open, onComplete, onClose }) => {
     if (errors[field]) {
       setErrors({ ...errors, [field]: null });
     }
+  };
+
+  const handleSelectHost = (url) => {
+    setFormData((current) => ({ ...current, hostUrl: url }));
+    setHostInfo(null);
+    setHostInfoError("");
+    if (errors.hostUrl) setErrors({ ...errors, hostUrl: null });
+  };
+
+  const handleRediscover = () => {
+    setDiscoveredHosts([]);
+    setDiscoveryDone(false);
+    setHostInfo(null);
+    setHostInfoError("");
+    setDiscoveryNonce((n) => n + 1);
   };
 
   return (
@@ -305,7 +406,19 @@ const SetupModal = ({ open, onComplete, onClose }) => {
           <Alert severity="error" sx={{ mb: 2 }}>{errors.submit}</Alert>
         )}
 
+        {hasErrors && activeStep < 3 && (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            <AlertTitle sx={{ fontWeight: 700 }}>Falta completar información</AlertTitle>
+            {missingFields.map((field) => (
+              <Box key={field} component="div" sx={{ fontSize: "0.85rem" }}>
+                • <strong>{FIELD_LABELS[field]}:</strong> {errors[field]}
+              </Box>
+            ))}
+          </Alert>
+        )}
+
         <Card sx={{
+          animation: shaking ? `${shake} 0.45s ease-in-out` : "none",
           background: isDark ? "rgba(30, 41, 59, 0.5)" : "rgba(255, 255, 255, 0.8)",
           border: `1px solid ${isDark ? "rgba(59, 130, 246, 0.12)" : "rgba(37, 99, 235, 0.1)"}`,
           backdropFilter: "blur(12px)",
@@ -323,7 +436,11 @@ const SetupModal = ({ open, onComplete, onClose }) => {
                   </Typography>
                   <Box sx={{ display: "flex", gap: 2, mb: 2 }}>
                     <Card
-                      onClick={() => setFormData({ ...formData, mode: "host" })}
+                      onClick={() => {
+                        setFormData({ ...formData, mode: "host" });
+                        setDiscoveredHosts([]);
+                        setDiscoveryDone(false);
+                      }}
                       sx={{
                         flex: 1, cursor: "pointer",
                         border: formData.mode === "host" ? "2px solid #3b82f6" : "1px solid rgba(148,163,184,0.3)",
@@ -335,7 +452,11 @@ const SetupModal = ({ open, onComplete, onClose }) => {
                       </CardContent>
                     </Card>
                     <Card
-                      onClick={() => setFormData({ ...formData, mode: "client" })}
+                      onClick={() => {
+                        setFormData({ ...formData, mode: "client" });
+                        setDiscoveredHosts([]);
+                        setDiscoveryDone(false);
+                      }}
                       sx={{
                         flex: 1, cursor: "pointer",
                         border: formData.mode === "client" ? "2px solid #3b82f6" : "1px solid rgba(148,163,184,0.3)",
@@ -349,24 +470,98 @@ const SetupModal = ({ open, onComplete, onClose }) => {
                   </Box>
                   {formData.mode === "client" && (
                     <>
+                      <Box sx={{ mb: 2 }}>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+                          Caja Principal
+                        </Typography>
+                        {discovering ? (
+                          <Box sx={{ display: "flex", alignItems: "center", gap: 1, py: 1 }}>
+                            <CircularProgress size={18} />
+                            <Typography variant="body2" color="textSecondary">
+                              Buscando la caja principal en la red...
+                            </Typography>
+                          </Box>
+                        ) : discoveredHosts.length > 0 ? (
+                          <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                            <Typography variant="body2" color="textSecondary">
+                              {discoveredHosts.length === 1
+                                ? "Se encontró una caja principal. Confirma que es la correcta:"
+                                : "Se encontraron varias cajas principales. Confirma la correcta:"}
+                            </Typography>
+                            {discoveredHosts.map((host, index) => (
+                              <Card
+                                key={host.url}
+                                onClick={() => handleSelectHost(host.url)}
+                                sx={{
+                                  cursor: "pointer",
+                                  border:
+                                    formData.hostUrl === host.url
+                                      ? "2px solid #3b82f6"
+                                      : errors.hostUrl
+                                        ? "2px solid #ef4444"
+                                        : "1px solid rgba(148,163,184,0.3)",
+                                }}
+                              >
+                                <CardContent
+                                  sx={{
+                                    py: 1,
+                                    px: 1.5,
+                                    "&:last-child": { pb: 1 },
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 1,
+                                  }}
+                                >
+                                  <Store sx={{ fontSize: 18, color: "#3b82f6" }} />
+                                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                    {host.storeName || (discoveredHosts.length > 1 ? `Caja principal ${index + 1}` : "Caja principal")}
+                                  </Typography>
+                                  {formData.hostUrl === host.url ? (
+                                    <Box sx={{ ml: "auto", display: "flex", alignItems: "center", gap: 0.5, color: "#059669" }}>
+                                      <CheckCircle sx={{ fontSize: 16 }} />
+                                      <Typography variant="caption" sx={{ fontWeight: 700 }}>Confirmada</Typography>
+                                    </Box>
+                                  ) : (
+                                    <Button size="small" variant="outlined" sx={{ ml: "auto" }}>
+                                      Confirmar
+                                    </Button>
+                                  )}
+                                </CardContent>
+                              </Card>
+                            ))}
+                          </Box>
+                        ) : discoveryDone ? (
+                          <Alert severity="warning">
+                            No se encontró la caja principal. Verifica que esté encendida y
+                            conectada a la misma red.
+                          </Alert>
+                        ) : null}
+                        <Box sx={{ display: "flex", gap: 1, mt: 1 }}>
+                          <Button
+                            size="small"
+                            onClick={handleRediscover}
+                            disabled={discovering}
+                            startIcon={<Refresh fontSize="small" />}
+                          >
+                            Buscar de nuevo
+                          </Button>
+                        </Box>
+                        {errors.hostUrl && (
+                          <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>
+                            {errors.hostUrl}
+                          </Typography>
+                        )}
+                      </Box>
                       <TextField
                         fullWidth
-                        label="IP / Host del Servidor"
-                        placeholder="Ej: 192.168.1.50:3456"
-                        value={formData.hostUrl}
-                        onChange={handleInputChange("hostUrl")}
-                        error={!!errors.hostUrl}
-                        helperText={errors.hostUrl}
-                        sx={{ mb: 2 }}
-                      />
-                      <TextField
-                        fullWidth
+                        required
                         label="Código de Activación"
                         placeholder="Código mostrado en la caja principal"
                         value={formData.activationCode}
                         onChange={handleInputChange("activationCode")}
-                        error={!!errors.activationCode}
-                        helperText={errors.activationCode}
+                        onBlur={handleBlurRequired("activationCode", "El código de activación es requerido")}
+                        error={!!errors.activationCode || !!hostInfoError}
+                        helperText={errors.activationCode || (hostInfoError ? "Código inválido o caja principal inaccesible" : "")}
                       />
                       {hostInfoLoading && (
                         <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 1 }}>
@@ -399,10 +594,12 @@ const SetupModal = ({ open, onComplete, onClose }) => {
                   </Typography>
                   <TextField
                     fullWidth
+                    required
                     label="Nombre de la Tienda"
                     placeholder="Ej: Mi Super Tienda"
                     value={formData.storeName}
                     onChange={handleInputChange("storeName")}
+                    onBlur={handleBlurRequired("storeName", "El nombre de la tienda es requerido")}
                     error={!!errors.storeName}
                     helperText={errors.storeName}
                     InputProps={{
@@ -463,10 +660,12 @@ const SetupModal = ({ open, onComplete, onClose }) => {
                       </Typography>
                   <TextField
                     fullWidth
+                    required
                     label="Nombre del Propietario"
                     placeholder="Tu nombre completo"
                     value={formData.ownerName}
                     onChange={handleInputChange("ownerName")}
+                    onBlur={handleBlurRequired("ownerName", "El nombre del propietario es requerido")}
                     error={!!errors.ownerName}
                     helperText={errors.ownerName}
                     InputProps={{
@@ -479,8 +678,10 @@ const SetupModal = ({ open, onComplete, onClose }) => {
                   />
                   <TextField
                     fullWidth
+                    required
                     label="PIN de acceso"
                     placeholder="Código de acceso numérico"
+                    onBlur={handleBlurRequired("adminPin", "El PIN es requerido")}
                     value={formData.adminPin}
                     onChange={(e) => {
                       const v = e.target.value.replace(/\D/g, "").slice(0, 6);

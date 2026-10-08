@@ -7,6 +7,7 @@ import {
 import { Plus, Pencil, Trash2, Shapes, CheckCircle2 } from "lucide-react";
 import CancelButton from "./CancelButton";
 import { useToast } from "./ToastProvider";
+import useDbChanges from "../utils/useDbChanges";
 
 const catColors = [
   { bg: "rgba(59,130,246,0.12)", icon: "#3b82f6", glow: "rgba(59,130,246,0.1)" },
@@ -29,16 +30,19 @@ const Categories = () => {
   const isDark = theme.palette.mode === "dark";
   const notify = useToast();
 
-  const load = async () => {
-    setLoading(true);
+  const load = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
       const list = await window.api.invoke("get-categories");
       setCategories(list);
     } catch {}
-    setLoading(false);
+    if (!silent) setLoading(false);
   };
 
   useEffect(() => { load(); }, []);
+
+  // Recarga automática cuando la BD cambia
+  useDbChanges(() => load({ silent: true }));
 
   const handleOpen = (cat = null) => {
     setEditing(cat);

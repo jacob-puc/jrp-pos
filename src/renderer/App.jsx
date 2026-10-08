@@ -335,7 +335,18 @@ const AppInner = () => {
     setShowSetup(false);
     setIsFirstTime(false);
     window.dispatchEvent(new CustomEvent("setupCompleted", { detail: setupData }));
-    // Auto-login as the admin created during setup
+
+    // Caja Cliente: NO se inicia sesión sola. Termina la instalación y pide
+    // iniciar sesión con un usuario y PIN de la caja principal (antes entraba
+    // como el administrador del Host sin pedir PIN).
+    if (setupData?.mode === "client") {
+      setCashier(null);
+      setLoggedIn(false);
+      window.location.hash = "#/";
+      return;
+    }
+
+    // Caja Principal: entra como el propietario creado en el asistente.
     try {
       const list = await window.api.invoke("get-cashiers");
       const admin = list.find((c) => c.role === "admin");

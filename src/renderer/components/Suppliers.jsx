@@ -16,6 +16,7 @@ import {
 import { TableSkeleton } from "./Skeletons";
 import CancelButton from "./CancelButton";
 import { useToast } from "./ToastProvider";
+import useDbChanges from "../utils/useDbChanges";
 
 const supplierSchema = z.object({
   name: z.string().min(1, "El nombre es requerido"),
@@ -46,15 +47,18 @@ const Suppliers = () => {
     defaultValues: { name: "", contact: "", phone: "", email: "", address: "" },
   });
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  const fetchData = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     const result = await window.api.invoke("get-suppliers");
     setSuppliers(result);
     setFiltered(result);
-    setLoading(false);
+    if (!silent) setLoading(false);
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Recarga automática cuando la BD cambia
+  useDbChanges(() => fetchData({ silent: true }));
 
   useEffect(() => {
     const handler = () => openAdd();

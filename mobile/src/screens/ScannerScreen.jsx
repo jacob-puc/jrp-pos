@@ -110,11 +110,12 @@ const ScannerScreen = ({ cashier }) => {
       setShowDetail(true);
       showMsg(`Producto encontrado: ${result.product.name}`);
     } catch (err) {
-      if (err.message.includes("no encontrado")) {
+      if (err.message.toLowerCase().includes("no encontrado")) {
         setNewProduct({ ...EMPTY_FORM, barcode: code });
         setShowNewForm(true);
       } else {
         showMsg(err.message);
+        setScanning(true);
       }
     } finally {
       setLoading(false);

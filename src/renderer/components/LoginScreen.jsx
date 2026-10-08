@@ -4,6 +4,7 @@ import {
 } from "@mui/material";
 import { Person, ArrowForward, CheckCircle, Lock } from "@mui/icons-material";
 import { useCashier } from "../contexts/CashierContext";
+import useDbChanges from "../utils/useDbChanges";
 
 const colors = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
 
@@ -21,23 +22,26 @@ const LoginScreen = ({ onLogin }) => {
   const pinRef = useRef(null);
   const isDark = theme.palette.mode === "dark";
 
-  useEffect(() => {
-    const load = async () => {
-      setUsersLoading(true);
-      try {
-        const [list, name, logo] = await Promise.all([
-          window.api.invoke("get-cashiers"),
-          window.api.invoke("get-setting", "store_name"),
-          window.api.invoke("get-setting", "store_logo"),
-        ]);
-        setCashiers(list);
-        if (name) setStoreName(name.toUpperCase());
-        if (logo) setStoreLogo(logo);
-      } catch {}
-      setUsersLoading(false);
-    };
-    load();
-  }, []);
+  const load = async ({ silent = false } = {}) => {
+    if (!silent) setUsersLoading(true);
+    try {
+      const [list, name, logo] = await Promise.all([
+        window.api.invoke("get-cashiers"),
+        window.api.invoke("get-setting", "store_name"),
+        window.api.invoke("get-setting", "store_logo"),
+      ]);
+      // Solo usuarios activos pueden iniciar sesión (igual en Host y Cliente).
+      setCashiers((Array.isArray(list) ? list : []).filter((c) => c.is_active !== 0));
+      if (name) setStoreName(name.toUpperCase());
+      if (logo) setStoreLogo(logo);
+    } catch {}
+    if (!silent) setUsersLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  // Usuarios dados de alta en el Host aparecen solos en esta pantalla
+  useDbChanges(() => load({ silent: true }));
 
   useEffect(() => {
     if (selectedId) pinRef.current?.focus();

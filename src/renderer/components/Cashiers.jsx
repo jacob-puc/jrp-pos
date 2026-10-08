@@ -8,6 +8,7 @@ import {
 import { User, Plus, Pencil, Trash2, Lock, CheckCircle2 } from "lucide-react";
 import CancelButton from "./CancelButton";
 import { TableSkeleton } from "./Skeletons";
+import useDbChanges from "../utils/useDbChanges";
 
 const inputSx = {
   "& .MuiOutlinedInput-root.MuiOutlinedInput-root": {
@@ -41,16 +42,19 @@ const Cashiers = () => {
   const theme = useTheme();
   const isDark = theme.palette.mode === "dark";
 
-  const load = async () => {
-    setLoading(true);
+  const load = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
       const list = await window.api.invoke("get-cashiers");
       setCashiers(list);
     } catch {}
-    setLoading(false);
+    if (!silent) setLoading(false);
   };
 
   useEffect(() => { load(); }, []);
+
+  // Recarga automática cuando la BD cambia (usuarios dados de alta en el Host)
+  useDbChanges(() => load({ silent: true }));
 
   const handleOpen = (cashier = null) => {
     setEditing(cashier);
@@ -71,7 +75,8 @@ const Cashiers = () => {
         const data = {
           name: form.name.trim(),
           pin: form.pin,
-          role: "cashier",
+          // Conserva el rol actual: antes editar al propietario lo degradaba a cajero.
+          role: editing.role || "cashier",
           is_active: editing.role === "admin" ? 1 : (form.active ? 1 : 0),
         };
         await window.api.invoke("update-cashier", editing.id, data);

@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import { View, FlatList, StyleSheet, KeyboardAvoidingView, Platform } from "react-native";
 import { Text, TextInput, Button, Chip, ActivityIndicator, Snackbar, Searchbar, SegmentedButtons, useTheme, IconButton, Switch } from "react-native-paper";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -55,26 +55,46 @@ const ManualScreen = ({ cashier }) => {
   const [snackbar, setSnackbar] = useState({ visible: false, text: "" });
 
   const [newProduct, setNewProduct] = useState({ ...EMPTY_FORM });
+  const searchRequestRef = useRef(0);
 
   const showMsg = (text) => setSnackbar({ visible: true, text });
 
   const doSearch = useCallback(async (query) => {
-    if (!query || query.trim().length < 1) { setResults([]); return; }
+    const term = String(query || "").trim();
+    const requestId = ++searchRequestRef.current;
+    if (!term) {
+      setResults([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const data = await searchProducts(query);
-      setResults(data.products || []);
+      const data = await searchProducts(term);
+      if (requestId === searchRequestRef.current) {
+        setResults(data.products || []);
+      }
     } catch (err) {
-      showMsg(err.message);
+      if (requestId === searchRequestRef.current) {
+        showMsg(err.message);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === searchRequestRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
   const handleSearch = (query) => {
     setSearchQuery(query);
-    doSearch(query);
   };
+
+  useEffect(() => {
+    const timer = setTimeout(() => doSearch(searchQuery), 250);
+    return () => {
+      clearTimeout(timer);
+      searchRequestRef.current += 1;
+    };
+  }, [doSearch, searchQuery]);
 
   const handleBarcodeSearch = async () => {
     const code = manualCode.trim();
@@ -85,7 +105,7 @@ const ManualScreen = ({ cashier }) => {
       setProduct(data.product);
       setShowDetail(true);
     } catch (err) {
-      if (err.message.includes("no encontrado")) {
+      if (err.message.toLowerCase().includes("no encontrado")) {
         setNewProduct({ ...EMPTY_FORM, barcode: code });
         setShowNewForm(true);
       } else {

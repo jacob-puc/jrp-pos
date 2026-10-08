@@ -13,6 +13,86 @@ const fs = require("fs");
 const crypto = require("crypto");
 const Database = require("better-sqlite3");
 const dataService = require("./data-service");
+const changeBus = require("./change-bus");
+const hostEvents = require("./host-events");
+
+// Puerto del API del Host (3456 por defecto; configurable para pruebas).
+const API_PORT = Number(process.env.POS_API_PORT) || 3456;
+
+// ─── Reenvío de operaciones de datos al Host (modo Cliente) ─────
+// En una caja cliente, estos canales NO tocan la BD local: se ejecutan en el
+// Host vía POST /api/rpc. El Host es la única fuente de verdad, así el stock
+// (p.ej. 5 de 20 -> vende 1 -> 4 de 20) es el mismo en todas las cajas.
+// Quedan locales: ajustes, impresión, báscula, cajón, respaldos, tareas y
+// todo lo propio del equipo.
+const HOST_DATA_CHANNELS = new Set([
+  // productos
+  "get-products", "get-all-products", "get-next-barcode", "check-barcode-exists",
+  "add-product", "update-product", "delete-product", "get-product-by-barcode",
+  "search-products", "get-top-products",
+  // categorías y proveedores
+  "get-categories", "add-category", "update-category", "delete-category",
+  "get-suppliers", "add-supplier", "update-supplier", "delete-supplier",
+  // inventario
+  "add-stock", "adjust-stock", "remove-stock", "get-stock-movements",
+  "get-product-day-summary",
+  // ventas
+  "record-sale", "cancel-sale", "cancel-sale-item", "get-recovery-info",
+  "get-sales-for-today", "get-outside-register-sales", "get-sales-by-range",
+  "get-sale-details", "get-sales-by-date", "get-expenses-by-range",
+  "get-expenses-by-date",
+  // usuarios
+  "add-cashier", "update-cashier", "delete-cashier",
+  // caja registradora y reportes
+  "register-cash-expense", "get-cash-register-status", "open-cash-register",
+  "close-cash-register", "get-closed-registers", "get-cash-register-expenses",
+  "get-previous-register-today", "delete-cash-expense",
+  "get-register-sales-detail", "get-weekly-sales", "get-daily-sales-week",
+  "get-weekly-sales-range",
+  // tareas compartidas entre cajas
+  "add-task", "update-task", "delete-task", "get-tasks-by-date",
+  "get-today-tasks", "get-due-tasks", "complete-task",
+]);
+// Acciones que leen archivos locales y escribirían en la BD de la caja
+// cliente: solo se permiten en la caja principal.
+const HOST_ONLY_CHANNELS = new Set(["import-products-data"]);
+
+const rpcRegistry = new Map();
+const isReadChannel = (channel) => /^(get|search|check)-/.test(channel);
+const rawIpcHandle = ipcMain.handle.bind(ipcMain);
+ipcMain.handle = (channel, listener) => {
+  rpcRegistry.set(channel, listener);
+  rawIpcHandle(channel, async (event, ...args) => {
+    if (dataService.getMode() === "client") {
+      if (HOST_DATA_CHANNELS.has(channel)) {
+        return dataService.forwardRpc(channel, args, {
+          readOnly: isReadChannel(channel),
+          runLocal: () => listener(event, ...args),
+        });
+      }
+      if (HOST_ONLY_CHANNELS.has(channel)) {
+        return {
+          success: false,
+          error: "Esta acción solo está disponible en la caja principal",
+        };
+      }
+    }
+    return listener(event, ...args);
+  });
+};
+
+// Ejecuta en el Host (BD local) un canal pedido por una caja cliente.
+const executeRpcOnHost = async (channel, args) => {
+  if (dataService.getMode() === "client") return { forbidden: true };
+  if (!HOST_DATA_CHANNELS.has(channel)) return { forbidden: true };
+  const listener = rpcRegistry.get(channel);
+  if (!listener) return { forbidden: true };
+  try {
+    return { result: await listener({ sender: null, fromRpc: true }, ...args) };
+  } catch (error) {
+    return { error: error.message || "Error en el Host" };
+  }
+};
 
 const dbDir = path.join(app.getPath("userData"), "db");
 if (!fs.existsSync(dbDir)) {
@@ -21,6 +101,8 @@ if (!fs.existsSync(dbDir)) {
 
 const dbPath = path.join(dbDir, "pos-system.db");
 let db = new Database(dbPath);
+// Detecta toda escritura de negocio para avisar en tiempo real (change-bus).
+changeBus.instrumentDb(db);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 // Durabilidad ante cortes de luz: cada transacción se escribe a disco
@@ -188,6 +270,11 @@ const createTables = () => {
     completed INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+  // Tareas compartidas: assigned_to = id del usuario responsable (NULL = la
+  // ven todos); created_by/created_by_name = quién la creó.
+  ensureColumn("tasks", "assigned_to", "INTEGER");
+  ensureColumn("tasks", "created_by", "INTEGER");
+  ensureColumn("tasks", "created_by_name", "TEXT");
 
   // Migration: add register_id to sales
   const sCols2 = db.prepare("PRAGMA table_info(sales)").all();
@@ -477,7 +564,19 @@ if (!gotTheLock) {
 }
 
 const apiServer = require("./api-server");
+apiServer.setRpcHandler(executeRpcOnHost);
 const discovery = require("./discovery");
+
+// Nombre de la tienda que el Host anuncia por UDP para que las cajas
+// cliente muestren el nombre en lugar de la dirección IP.
+const getStoreNameSetting = () => {
+  try {
+    return db.prepare("SELECT value FROM settings WHERE key = 'store_name'").get()?.value || "";
+  } catch {
+    return "";
+  }
+};
+const dbWatcher = require("./db-watcher");
 
 let mainWin = null;
 let isQuitting = false;
@@ -583,6 +682,66 @@ const createMainWindow = () => {
   return mainWin;
 };
 
+// ─── Tiempo real: avisos al renderer y suscripción al Host ──────
+let lastRealtimeAt = 0;
+
+// Avisa a las pantallas que los datos cambiaron (utils/useDbChanges.js).
+const notifyRenderer = (realtime = false) => {
+  if (realtime) lastRealtimeAt = Date.now();
+  if (mainWin && !mainWin.isDestroyed()) {
+    mainWin.webContents.send("db-changed", { ts: Date.now() });
+  }
+};
+
+// Avisa a la interfaz que cambió el estado de la conexión con la principal
+// (el indicador de la barra superior se pone verde/rojo al instante).
+const notifyConnection = () => {
+  if (mainWin && !mainWin.isDestroyed()) {
+    mainWin.webContents.send("host-connection", { ts: Date.now() });
+  }
+};
+
+// Espejo local del catálogo (solo para operar sin conexión). Se refresca como
+// mucho cada 4 s aunque lleguen ráfagas de eventos, para no descargar el
+// catálogo completo en cada venta.
+let mirrorTimer = null;
+let lastMirrorAt = 0;
+const scheduleMirrorRefresh = () => {
+  if (mirrorTimer) return;
+  const wait = Math.max(0, 4000 - (Date.now() - lastMirrorAt));
+  mirrorTimer = setTimeout(async () => {
+    mirrorTimer = null;
+    lastMirrorAt = Date.now();
+    try {
+      await dataService.refreshCatalogCache();
+    } catch {}
+  }, wait);
+};
+
+// Arranca/para la conexión en vivo con el Host según el modo de la caja.
+const syncHostEventsWithMode = () => {
+  if (dataService.getMode() !== "client") {
+    hostEvents.stop();
+    return;
+  }
+  hostEvents.start({
+    getUrl: () => dataService.getHostUrl(),
+    getToken: () => dataService.getHostToken(),
+    onChange: () => {
+      notifyRenderer(true);
+      scheduleMirrorRefresh();
+    },
+    onConnected: () => {
+      // Al conectar/reconectar: ponerse al día de inmediato (sube ventas
+      // hechas sin conexión, refresca espejo y pantallas).
+      notifyRenderer(true);
+      notifyConnection();
+      dataService.syncPendingSales().catch(() => {});
+    },
+    onDisconnected: () => notifyConnection(),
+  });
+};
+
 app.on("ready", () => {
   // Sin menú de aplicación: evita recargas accidentales (Ctrl+R).
   Menu.setApplicationMenu(null);
@@ -593,6 +752,54 @@ app.on("ready", () => {
   createMainWindow();
   createTray();
 
+  // Vigilante de cambios: cuando detecta que los datos cambiaron (ventas de
+  // esta u otras cajas, entradas de stock, cortes de caja, altas de
+  // catálogos...), avisa al renderer por "db-changed" y las pantallas se
+  // actualizan solas (ver utils/useDbChanges.js).
+  //
+  // Tiempo real (sin esperar al sondeo):
+  //  - Host: change-bus detecta cada escritura en la BD (UI propia, cajas
+  //    cliente, app móvil) y avisa a su renderer y a las cajas cliente (SSE).
+  //  - Cliente: host-events mantiene un SSE abierto con el Host; cada evento
+  //    refresca las pantallas al instante y el espejo del catálogo.
+  // El sondeo de abajo queda como red de seguridad (cada 10 s).
+  changeBus.onChange((info) => {
+    if (dataService.getMode() !== "host") return;
+    notifyRenderer(true);
+    apiServer.broadcastChange(info);
+  });
+  syncHostEventsWithMode();
+
+  dbWatcher.startWatcher({
+    intervalMs: 10000,
+    getSignature: async () => {
+      if (dataService.getMode() === "client") {
+        try {
+          const resp = await requestPairedHost("/api/db-version", {
+            signal: AbortSignal.timeout(3000),
+          });
+          return resp?.version || null;
+        } catch {
+          // Sin conexión con el Host: vigila la BD espejo local.
+          return dbWatcher.computeLocalSignature(db);
+        }
+      }
+      return dbWatcher.computeLocalSignature(db);
+    },
+    onChange: async () => {
+      // El tiempo real ya avisó hace instantes: no repetir.
+      if (Date.now() - lastRealtimeAt < 15000) return;
+      // En modo Cliente, primero refresca el espejo del catálogo para que
+      // la recarga de las pantallas lea los datos nuevos del Host.
+      if (dataService.getMode() === "client") {
+        try {
+          await dataService.refreshCatalogCache();
+        } catch {}
+      }
+      notifyRenderer(false);
+    },
+  });
+
   // Pre-compila el worker del cajón en segundo plano para que la primera
   // apertura también sea rápida (no bloquea el arranque).
   ensureDrawerWorker().catch(() => {});
@@ -600,66 +807,49 @@ app.on("ready", () => {
   // Start local API server (solo en cajas Host; una caja Cliente no
   // levanta el servidor, opera como cliente contra el Host).
   (async () => {
-    const modeRow = db
-      .prepare("SELECT value FROM settings WHERE key = 'app_mode'")
+    let mode = dataService.getMode();
+
+    // Auto-reparación: una caja "cliente" que quedó emparejada consigo misma
+    // (se detectó a sí misma al instalar) no puede funcionar: su servidor se
+    // apaga y nada responde. Se devuelve a modo Host para que vuelva a operar.
+    if (mode === "client") {
+      const savedUrl = dataService.getSavedHostUrl();
+      if (savedUrl && discovery.isLocalHost(savedUrl)) {
+        console.warn("[Setup] La caja estaba emparejada consigo misma; se restaura el modo Host.");
+        dataService.setMode("host");
+        mode = "host";
+        syncHostEventsWithMode();
+      }
+    }
+
+    // Instalación nueva (sin configurar): todavía no se sabe si esta caja
+    // será Host o Cliente. No se levanta el servidor ni se anuncia en la red
+    // hasta que el asistente termine; si no, otras cajas nuevas la verían
+    // como una "caja principal" vacía.
+    const firstTime = !db
+      .prepare("SELECT value FROM settings WHERE key = 'store_name'")
       .get();
-    const mode = modeRow ? modeRow.value : "host";
+    if (mode === "host" && firstTime) {
+      console.log("Instalación nueva: el servidor se activará al terminar la configuración.");
+      return;
+    }
+
     if (mode === "host") {
-      const result = await apiServer.startServer(db, 3456);
+      const result = await apiServer.startServer(db, API_PORT);
       if (result.success) {
-        await discovery.startDiscovery(3456);
-        console.log(`Mobile API ready on port ${3456}`);
+        await discovery.startDiscovery(API_PORT, getStoreNameSetting);
+        console.log(`Mobile API ready on port ${API_PORT}`);
       } else {
         console.error("Failed to start mobile API:", result.error);
       }
     } else {
       console.log("Modo CLIENTE: sin servidor API local; usando caché local + API del Host.");
+      rediscoverHostIfNeeded();
     }
   })();
 
-  // Task reminder checker every 30 seconds
-  setInterval(() => {
-    if (!mainWin || mainWin.isDestroyed()) return;
-    try {
-      const today = new Date().toLocaleDateString("en-CA", {
-        timeZone: "America/Mexico_City",
-      });
-      const now = new Date();
-      const mxTimeStr = now.toLocaleString("en-US", {
-        timeZone: "America/Mexico_City",
-        hour: "numeric",
-        minute: "numeric",
-        hour12: false,
-      });
-      const [currH, currM] = mxTimeStr.split(":").map(Number);
-      const currentMinutes = currH * 60 + currM;
-      const tasks = db
-        .prepare(
-          "SELECT * FROM tasks WHERE task_date = ? AND completed = 0 AND task_time IS NOT NULL",
-        )
-        .all(today);
-      for (const task of tasks) {
-        if (notifiedTasks.has(task.id)) continue;
-        const [h, m] = task.task_time.split(":").map(Number);
-        const taskMinutes = h * 60 + m;
-        const reminderMinutes = task.reminder_minutes || 30;
-        if (
-          currentMinutes >= taskMinutes - reminderMinutes &&
-          currentMinutes <= taskMinutes + 1
-        ) {
-          notifiedTasks.add(task.id);
-          mainWin.webContents.send("task-reminder", {
-            id: task.id,
-            title: task.title,
-            description: task.description,
-            task_time: task.task_time,
-          });
-        }
-      }
-    } catch (e) {
-      console.error("[TASKS REMINDER ERROR]", e.message);
-    }
-  }, 30000);
+  // Los recordatorios de tareas los consulta el renderer (get-due-tasks) para
+  // que lleguen solo al usuario asignado y funcionen igual en cajas cliente.
 });
 
 app.on("before-quit", () => {
@@ -677,6 +867,8 @@ app.on("before-quit", () => {
   destroyDrawerWorker();
   apiServer.stopServer();
   discovery.stopDiscovery();
+  dbWatcher.stopWatcher();
+  hostEvents.stop();
   dataService.stopSyncWorker();
 });
 
@@ -1931,7 +2123,15 @@ function toUTCDateRange(mxDateStr) {
 // cuando la luz se va y regresa al otro día.
 const findOpenRegister = (cashierId, role) => {
   try {
-    if (role === "admin") {
+    if (cashierId) {
+      const userRegister = db
+        .prepare(
+          "SELECT * FROM cash_register WHERE status = 'open' AND (cashier_id = ? OR opened_by = ?) ORDER BY opened_at DESC, id DESC LIMIT 1",
+        )
+        .get(cashierId, cashierId);
+      if (userRegister) return userRegister;
+    }
+    if (role === "admin" || !cashierId) {
       return (
         db
           .prepare(
@@ -1940,22 +2140,7 @@ const findOpenRegister = (cashierId, role) => {
           .get() || null
       );
     }
-    if (cashierId) {
-      return (
-        db
-          .prepare(
-            "SELECT * FROM cash_register WHERE status = 'open' AND (cashier_id = ? OR opened_by = ?) ORDER BY opened_at DESC, id DESC LIMIT 1",
-          )
-          .get(cashierId, cashierId) || null
-      );
-    }
-    return (
-      db
-        .prepare(
-          "SELECT * FROM cash_register WHERE status = 'open' ORDER BY opened_at DESC, id DESC LIMIT 1",
-        )
-        .get() || null
-    );
+    return null;
   } catch (e) {
     return null;
   }
@@ -2301,11 +2486,94 @@ ipcMain.handle("get-activation-code", async () => {
   }
 });
 
+// Error de usuario (sin prefijo técnico) cuando se intenta usar esta misma
+// caja como caja principal.
+const selfHostError = () => {
+  const err = new Error(
+    "Esa es esta misma caja. Elige la caja principal de otro equipo de la red.",
+  );
+  err.plain = true;
+  return err;
+};
+
 const normalizeHostUrl = (hostUrl) => {
   let url = String(hostUrl || "").trim();
   if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
-  if (!/:\d+(\/|$)/.test(url.replace(/^https?:\/\//i, ""))) url += ":3456";
+  if (!/:\d+(\/|$)/.test(url.replace(/^https?:\/\//i, ""))) url += ":" + API_PORT;
   return url.replace(/\/$/, "");
+};
+
+// Resuelve la URL del Host: si el usuario no la escribió, busca la caja
+// principal en la red local por broadcast UDP (el Host responde desde
+// discovery.js) y usa la primera que conteste.
+const resolveHostUrl = async (hostUrl) => {
+  if (hostUrl && String(hostUrl).trim()) {
+    const url = normalizeHostUrl(hostUrl);
+    if (discovery.isLocalHost(url)) throw selfHostError();
+    return url;
+  }
+  const servers = await discovery.discoverServers(4000);
+  if (servers.length === 0) {
+    throw new Error(
+      "No se encontró la caja principal en la red. Verifica que esté encendida y conectada a la misma red.",
+    );
+  }
+  return servers[0].url;
+};
+
+// Busca cajas Host en la red local (modo Cliente: el usuario solo necesita
+// el código de activación, la IP se descubre sola).
+ipcMain.handle("discover-hosts", async () => {
+  try {
+    const servers = await discovery.discoverServers(3500);
+    return { success: true, servers };
+  } catch (error) {
+    return { success: false, error: error.message, servers: [] };
+  }
+});
+
+// Al arrancar en modo CLIENTE: si el Host guardado no responde (típico
+// cuando el router le asigna otra IP por DHCP), lo busca de nuevo en la red
+// y actualiza host_url. El token persistente sirve para validar que el
+// servidor encontrado es el mismo Host con el que se emparejó la caja.
+const rediscoverHostIfNeeded = async () => {
+  try {
+    if (dataService.getMode() !== "client") return;
+    const token = db
+      .prepare("SELECT value FROM settings WHERE key = 'host_token'")
+      .get()?.value;
+
+    const probeAuth = async (baseUrl) => {
+      try {
+        const headers = { "Content-Type": "application/json" };
+        if (token) headers.Authorization = token;
+        const res = await fetch(`${baseUrl}/api/categories`, {
+          headers,
+          signal: AbortSignal.timeout(2500),
+        });
+        return res.ok;
+      } catch {
+        return false;
+      }
+    };
+
+    const current = dataService.getHostUrl();
+    if (await probeAuth(current)) return; // el Host sigue accesible
+
+    console.log(`[Discovery] Host ${current} no responde; buscando en la red...`);
+    const servers = await discovery.discoverServers(4000);
+    for (const server of servers) {
+      if (server.url === current) continue;
+      if (await probeAuth(server.url)) {
+        dataService.setHost(server.url);
+        console.log(`[Discovery] Host reencontrado en ${server.url}`);
+        return;
+      }
+    }
+    console.log("[Discovery] No se encontró el Host en la red");
+  } catch (err) {
+    console.error("[Discovery] Error en redescubrimiento:", err.message);
+  }
 };
 
 const requestPairedHost = async (pathname, options = {}) => {
@@ -2326,10 +2594,10 @@ const requestPairedHost = async (pathname, options = {}) => {
 
 ipcMain.handle("get-host-setup-info", async (event, { hostUrl, activationCode } = {}) => {
   try {
-    if (!hostUrl || !activationCode) {
-      return { success: false, error: "IP del Host y código de activación requeridos" };
+    if (!activationCode) {
+      return { success: false, error: "Código de activación requerido" };
     }
-    const url = normalizeHostUrl(hostUrl);
+    const url = await resolveHostUrl(hostUrl);
     const response = await fetch(`${url}/api/auth/host-info`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2342,7 +2610,10 @@ ipcMain.handle("get-host-setup-info", async (event, { hostUrl, activationCode } 
     }
     return data;
   } catch (error) {
-    return { success: false, error: `No se pudo conectar al Host: ${error.message}` };
+    return {
+      success: false,
+      error: error.plain ? error.message : `No se pudo conectar al Host: ${error.message}`,
+    };
   }
 });
 
@@ -2367,14 +2638,15 @@ ipcMain.handle("set-app-mode", async (event, mode) => {
       apiServer.stopServer();
     } else {
       if (!apiServer.getStatus().running) {
-        const result = await apiServer.startServer(db, 3456);
+        const result = await apiServer.startServer(db, API_PORT);
         if (!result.success) throw new Error(result.error);
       }
       if (!discovery.getStatus().running) {
-        const result = await discovery.startDiscovery(3456);
+        const result = await discovery.startDiscovery(API_PORT, getStoreNameSetting);
         if (!result.success) throw new Error(result.error);
       }
     }
+    syncHostEventsWithMode();
     return { success: true, mode: currentMode };
   } catch (error) {
     return { success: false, error: error.message };
@@ -2386,6 +2658,8 @@ ipcMain.handle("get-app-mode", async () => ({
   mode: dataService.getMode(),
   hostUrl: dataService.getHostUrl(),
   offline: dataService.isOffline(),
+  // Conectado = hay enlace en vivo con la caja principal y no está offline.
+  connected: hostEvents.isConnected() && !dataService.isOffline(),
   pendingSyncSales: dataService.getPendingCount(),
 }));
 
@@ -2401,9 +2675,9 @@ ipcMain.handle("sync-now", async () => {
 // por un token persistente y guarda la URL/token en settings.
 ipcMain.handle("pair-with-host", async (event, { hostUrl, activationCode } = {}) => {
   try {
-    if (!hostUrl || !activationCode)
-      return { success: false, error: "IP del Host y código requeridos" };
-    const url = normalizeHostUrl(hostUrl);
+    if (!activationCode)
+      return { success: false, error: "Código de activación requerido" };
+    const url = await resolveHostUrl(hostUrl);
 
     const res = await fetch(`${url}/api/auth/pair-device`, {
       method: "POST",
@@ -2425,15 +2699,21 @@ ipcMain.handle("pair-with-host", async (event, { hostUrl, activationCode } = {})
       };
 
     dataService.setHost(url, data.token);
+    syncHostEventsWithMode();
     return { success: true, hostUrl: url };
   } catch (error) {
-    return { success: false, error: `No se pudo conectar al Host: ${error.message}` };
+    return {
+      success: false,
+      error: error.plain ? error.message : `No se pudo conectar al Host: ${error.message}`,
+    };
   }
 });
 
 ipcMain.handle("set-host-connection", async (event, { url, token } = {}) => {
   try {
+    if (url && discovery.isLocalHost(url)) throw selfHostError();
     dataService.setHost(url, token);
+    syncHostEventsWithMode();
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
@@ -2480,7 +2760,7 @@ ipcMain.handle("get-server-status", () => {
   const api = apiServer.getStatus();
   return {
     running: api.running,
-    port: api.port || 3456,
+    port: api.port || API_PORT,
     ip: api.running ? discovery.getLocalIP() : null,
   };
 });
@@ -2540,18 +2820,35 @@ ipcMain.handle("update-cashier", async (event, id, cashier) => {
 
 ipcMain.handle("verify-cashier-pin", async (event, id, pin) => {
   try {
+    // El PIN siempre se compara como texto y sin espacios: evita falsos
+    // "incorrecto" por tipo (número vs texto) o espacios sobrantes.
+    const enteredPin = String(pin ?? "").trim();
     if (dataService.getMode() === "client") {
-      const response = await requestPairedHost("/api/auth/verify", {
-        method: "POST",
-        body: JSON.stringify({ id, pin }),
-      });
-      return { success: true, cashier: response.cashier };
+      try {
+        const response = await requestPairedHost("/api/auth/verify", {
+          method: "POST",
+          body: JSON.stringify({ id, pin: enteredPin }),
+        });
+        return { success: true, cashier: response.cashier };
+      } catch (err) {
+        // Distingue PIN malo de "no hay conexión con la caja principal".
+        if (/PIN inv|Usuario y PIN/i.test(err.message)) {
+          return { success: false, error: "PIN incorrecto" };
+        }
+        return {
+          success: false,
+          error: "No se pudo conectar con la caja principal para validar el PIN. Revisa la red e intenta de nuevo.",
+        };
+      }
     }
     const cashier = db
-      .prepare("SELECT id, name, pin, role FROM cashiers WHERE id = ?")
+      .prepare("SELECT id, name, pin, role, is_active FROM cashiers WHERE id = ?")
       .get(id);
     if (!cashier) return { success: false, error: "Cajero no encontrado" };
-    if (cashier.pin !== pin) return { success: false, error: "PIN incorrecto" };
+    if (cashier.is_active === 0)
+      return { success: false, error: "Este usuario está desactivado" };
+    if (String(cashier.pin ?? "").trim() !== enteredPin)
+      return { success: false, error: "PIN incorrecto" };
     return {
       success: true,
       cashier: { id: cashier.id, name: cashier.name, role: cashier.role },
@@ -2615,12 +2912,21 @@ ipcMain.handle(
       // se sigue mostrando para poder cerrarla al volver la luz.
       let register = findOpenRegister(cashierId, role);
       if (!register) {
-        register =
-          db
+        if (cashierId) {
+          register = db
             .prepare(
-              "SELECT * FROM cash_register WHERE date = ? ORDER BY id DESC LIMIT 1",
+              "SELECT * FROM cash_register WHERE date = ? AND (cashier_id = ? OR opened_by = ?) ORDER BY id DESC LIMIT 1",
             )
-            .get(today) || null;
+            .get(today, cashierId, cashierId);
+        }
+        if (!register) {
+          register =
+            db
+              .prepare(
+                "SELECT * FROM cash_register WHERE date = ? ORDER BY id DESC LIMIT 1",
+              )
+              .get(today) || null;
+        }
       }
       if (register) {
         const opener = db
@@ -3633,25 +3939,102 @@ ipcMain.handle("import-products-data", async (event, filePath) => {
 });
 
 // ─── TAREAS (TASKS) ─────────────────────────────────────────
-const notifiedTasks = new Set();
+// Tareas compartidas entre todas las cajas (viven en la BD del Host). Cada
+// tarea es "para todos" (assigned_to NULL) o para un usuario concreto.
+//   - Quién la ve: si es para todos, todos; si no, su responsable, su creador
+//     y el administrador.
+//   - Recordatorio: solo a quien está asignada (o a todos si es para todos).
+//   - Marcar como hecha: cualquiera que la vea.
+//   - Editar / eliminar: administrador, creador, o tareas antiguas sin creador.
+// `viewer` = { cashierId, role } del usuario con sesión; sin viewer no se
+// filtra (compatibilidad).
+const normalizeViewer = (viewer) => {
+  const id =
+    viewer && viewer.cashierId != null && viewer.cashierId !== ""
+      ? Number(viewer.cashierId)
+      : NaN;
+  return {
+    hasViewer: Number.isFinite(id),
+    id: Number.isFinite(id) ? id : null,
+    isAdmin: !!viewer && viewer.role === "admin",
+  };
+};
+
+const TASK_SELECT =
+  "SELECT t.*, c.name AS assigned_name FROM tasks t LEFT JOIN cashiers c ON c.id = t.assigned_to";
+
+const taskVisibility = (viewerRaw) => {
+  const v = normalizeViewer(viewerRaw);
+  if (!v.hasViewer || v.isAdmin) return { sql: "", params: [] };
+  return {
+    sql: " AND (t.assigned_to IS NULL OR t.assigned_to = ? OR t.created_by = ?)",
+    params: [v.id, v.id],
+  };
+};
+
+const canManageTask = (task, viewerRaw) => {
+  const v = normalizeViewer(viewerRaw);
+  if (!v.hasViewer || v.isAdmin) return true;
+  return task.created_by == null || task.created_by === v.id;
+};
+
+const canSeeTask = (task, viewerRaw) => {
+  const v = normalizeViewer(viewerRaw);
+  if (!v.hasViewer || v.isAdmin) return true;
+  return (
+    task.assigned_to == null ||
+    task.assigned_to === v.id ||
+    task.created_by === v.id
+  );
+};
+
+const resolveAssignee = (assignedTo) => {
+  if (assignedTo == null || assignedTo === "" || assignedTo === "all") {
+    return { ok: true, id: null };
+  }
+  const id = Number(assignedTo);
+  const user = Number.isFinite(id)
+    ? db.prepare("SELECT id FROM cashiers WHERE id = ? AND is_active = 1").get(id)
+    : null;
+  if (!user) return { ok: false, error: "El usuario asignado no existe o está inactivo" };
+  return { ok: true, id: user.id };
+};
 
 ipcMain.handle(
   "add-task",
   async (
     event,
-    { title, description, taskDate, taskTime, reminderMinutes },
+    {
+      title,
+      description,
+      taskDate,
+      taskTime,
+      reminderMinutes,
+      assignedTo,
+      createdBy,
+      createdByName,
+    } = {},
   ) => {
     try {
-      const stmt = db.prepare(
-        "INSERT INTO tasks (title, description, task_date, task_time, reminder_minutes) VALUES (?, ?, ?, ?, ?)",
-      );
-      const result = stmt.run(
-        title,
-        description || "",
-        taskDate,
-        taskTime || null,
-        reminderMinutes || 30,
-      );
+      if (!title || !String(title).trim())
+        return { success: false, error: "El título de la tarea es requerido" };
+      if (!taskDate) return { success: false, error: "La fecha es requerida" };
+      const assignee = resolveAssignee(assignedTo);
+      if (!assignee.ok) return { success: false, error: assignee.error };
+      const result = db
+        .prepare(
+          "INSERT INTO tasks (title, description, task_date, task_time, reminder_minutes, assigned_to, created_by, created_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          String(title).trim(),
+          description || "",
+          taskDate,
+          taskTime || null,
+          reminderMinutes || 30,
+          assignee.id,
+          createdBy != null && createdBy !== "" ? Number(createdBy) : null,
+          createdByName || null,
+        );
       return { success: true, id: result.lastInsertRowid };
     } catch (error) {
       return { success: false, error: error.message };
@@ -3663,17 +4046,37 @@ ipcMain.handle(
   "update-task",
   async (
     event,
-    { id, title, description, taskDate, taskTime, reminderMinutes },
+    {
+      id,
+      title,
+      description,
+      taskDate,
+      taskTime,
+      reminderMinutes,
+      assignedTo,
+      cashierId,
+      role,
+    } = {},
   ) => {
     try {
+      const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id);
+      if (!task) return { success: false, error: "Tarea no encontrada" };
+      if (!canManageTask(task, { cashierId, role }))
+        return { success: false, error: "Solo quien creó la tarea o un administrador puede editarla" };
+      const assignee =
+        assignedTo === undefined
+          ? { ok: true, id: task.assigned_to }
+          : resolveAssignee(assignedTo);
+      if (!assignee.ok) return { success: false, error: assignee.error };
       db.prepare(
-        "UPDATE tasks SET title = ?, description = ?, task_date = ?, task_time = ?, reminder_minutes = ? WHERE id = ?",
+        "UPDATE tasks SET title = ?, description = ?, task_date = ?, task_time = ?, reminder_minutes = ?, assigned_to = ? WHERE id = ?",
       ).run(
         title,
         description || "",
         taskDate,
         taskTime || null,
         reminderMinutes || 30,
+        assignee.id,
         id,
       );
       return { success: true };
@@ -3683,8 +4086,12 @@ ipcMain.handle(
   },
 );
 
-ipcMain.handle("delete-task", async (event, id) => {
+ipcMain.handle("delete-task", async (event, id, viewer) => {
   try {
+    const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id);
+    if (!task) return { success: true };
+    if (!canManageTask(task, viewer))
+      return { success: false, error: "Solo quien creó la tarea o un administrador puede eliminarla" };
     db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
     return { success: true };
   } catch (error) {
@@ -3692,35 +4099,81 @@ ipcMain.handle("delete-task", async (event, id) => {
   }
 });
 
-ipcMain.handle("get-tasks-by-date", async (event, date) => {
+ipcMain.handle("get-tasks-by-date", async (event, date, viewer) => {
   try {
+    const vis = taskVisibility(viewer);
     const tasks = db
-      .prepare("SELECT * FROM tasks WHERE task_date = ? ORDER BY task_time ASC")
-      .all(date);
+      .prepare(
+        `${TASK_SELECT} WHERE t.task_date = ?${vis.sql} ORDER BY t.task_time ASC, t.id ASC`,
+      )
+      .all(date, ...vis.params);
     return { success: true, tasks };
   } catch (error) {
     return { success: false, error: error.message, tasks: [] };
   }
 });
 
-ipcMain.handle("get-today-tasks", async () => {
+ipcMain.handle("get-today-tasks", async (event, viewer) => {
   try {
     const today = new Date().toLocaleDateString("en-CA", {
       timeZone: "America/Mexico_City",
     });
+    const vis = taskVisibility(viewer);
     const tasks = db
       .prepare(
-        "SELECT * FROM tasks WHERE task_date = ? AND completed = 0 ORDER BY task_time ASC",
+        `${TASK_SELECT} WHERE t.task_date = ? AND t.completed = 0${vis.sql} ORDER BY t.task_time ASC, t.id ASC`,
       )
-      .all(today);
+      .all(today, ...vis.params);
     return { success: true, tasks };
   } catch (error) {
     return { success: false, error: error.message, tasks: [] };
   }
 });
 
-ipcMain.handle("complete-task", async (event, id) => {
+// Tareas de hoy cuyo recordatorio ya toca para este usuario: las asignadas a
+// él y las "para todos". El renderer evita repetir avisos.
+ipcMain.handle("get-due-tasks", async (event, viewer) => {
   try {
+    const v = normalizeViewer(viewer);
+    const today = new Date().toLocaleDateString("en-CA", {
+      timeZone: "America/Mexico_City",
+    });
+    const mxTimeStr = new Date().toLocaleString("en-US", {
+      timeZone: "America/Mexico_City",
+      hour: "numeric",
+      minute: "numeric",
+      hour12: false,
+    });
+    const [currH, currM] = mxTimeStr.split(":").map(Number);
+    const currentMinutes = (currH % 24) * 60 + currM;
+    const rows = db
+      .prepare(
+        `${TASK_SELECT} WHERE t.task_date = ? AND t.completed = 0 AND t.task_time IS NOT NULL
+         AND (t.assigned_to IS NULL OR t.assigned_to = ?) ORDER BY t.task_time ASC`,
+      )
+      .all(today, v.hasViewer ? v.id : -1);
+    const tasks = rows.filter((task) => {
+      const [h, m] = String(task.task_time).split(":").map(Number);
+      if (!Number.isFinite(h) || !Number.isFinite(m)) return false;
+      const taskMinutes = h * 60 + m;
+      const reminder = task.reminder_minutes || 30;
+      return (
+        currentMinutes >= taskMinutes - reminder &&
+        currentMinutes <= taskMinutes + 5
+      );
+    });
+    return { success: true, tasks };
+  } catch (error) {
+    return { success: false, error: error.message, tasks: [] };
+  }
+});
+
+ipcMain.handle("complete-task", async (event, id, viewer) => {
+  try {
+    const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id);
+    if (!task) return { success: false, error: "Tarea no encontrada" };
+    if (!canSeeTask(task, viewer))
+      return { success: false, error: "No tienes acceso a esta tarea" };
     db.prepare("UPDATE tasks SET completed = 1 WHERE id = ?").run(id);
     return { success: true };
   } catch (error) {

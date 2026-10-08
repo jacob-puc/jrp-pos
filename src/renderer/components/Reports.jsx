@@ -13,6 +13,7 @@ import {
 import { CardSkeleton, TableSkeleton } from "./Skeletons";
 import CancelButton from "./CancelButton";
 import { mxToday, formatMXDate, formatMXTime, formatMXDateTime, getMXDateString } from "../utils/dateUtils";
+import useDbChanges from "../utils/useDbChanges";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip, ResponsiveContainer } from "recharts";
 import { jsPDF } from "jspdf";
 import { applyPlugin } from "jspdf-autotable";
@@ -72,9 +73,9 @@ const Reports = () => {
     setExpenseEndDate(today);
   }, []);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async ({ silent = false } = {}) => {
     if (!startDate || !endDate) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     const [salesResult, expResult] = await Promise.all([
       window.api.invoke("get-sales-by-range", { startDate, endDate }),
       window.api.invoke("get-expenses-by-range", { startDate, endDate }),
@@ -85,17 +86,24 @@ const Reports = () => {
       setCount(salesResult.count);
       setAvg(salesResult.count > 0 ? salesResult.total / salesResult.count : 0);
       setByMethod(salesResult.byMethod || []);
-      setPage(0);
+      // En recargas automáticas no se reinicia la paginación.
+      if (!silent) setPage(0);
     }
     if (expResult.success) {
       setExpenses(expResult.expenses);
       setTotalExpenses(expResult.totalExpenses);
       setExpensesCount(expResult.count);
     }
-    setLoading(false);
+    if (!silent) setLoading(false);
   }, [startDate, endDate]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Recarga automática cuando la BD cambia (ventas de otras cajas, gastos...)
+  useDbChanges(() => {
+    fetchData({ silent: true });
+    if (calendarOpen) fetchCalendarMonth(calendarDate, { silent: true });
+  });
 
   const fetchExpenses = useCallback(async (sDate, eDate, pg) => {
     const result = await window.api.invoke("get-expenses-by-range", { startDate: sDate, endDate: eDate });
@@ -151,7 +159,7 @@ const Reports = () => {
     );
   };
 
-  const fetchCalendarMonth = useCallback(async (refDate) => {
+  const fetchCalendarMonth = useCallback(async (refDate, { silent = false } = {}) => {
     const year = refDate.getFullYear();
     const month = refDate.getMonth();
     const mm = String(month + 1).padStart(2, "0");
@@ -169,7 +177,7 @@ const Reports = () => {
     const prevStart = `${prevYear}-${prevMm}-01`;
     const prevEnd = `${prevYear}-${prevMm}-${String(daysInPrevMonth).padStart(2, "0")}`;
 
-    setCalendarLoading(true);
+    if (!silent) setCalendarLoading(true);
     const [salesRes, expRes, prevSalesRes, prevExpRes] = await Promise.all([
       window.api.invoke("get-daily-sales-week", { startDate: monthStart, endDate: monthEndPlus }),
       window.api.invoke("get-expenses-by-range", { startDate: monthStart, endDate: monthEnd }),
@@ -211,7 +219,7 @@ const Reports = () => {
       prevSales: prevSalesRes.success ? prevSalesRes.total || 0 : 0,
       prevExpenses: prevExpRes.success ? prevExpRes.totalExpenses || 0 : 0,
     });
-    setCalendarLoading(false);
+    if (!silent) setCalendarLoading(false);
   }, []);
 
   useEffect(() => {

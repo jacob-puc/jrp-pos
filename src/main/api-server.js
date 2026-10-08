@@ -1,5 +1,6 @@
 const express = require("express");
 const crypto = require("crypto");
+const dbWatcher = require("./db-watcher");
 
 const nomarize = (s) =>
   (s == null ? "" : String(s))
@@ -12,11 +13,33 @@ const nomarize = (s) =>
 let server = null;
 let activeTokens = {};
 
+// Cajas cliente suscritas a los cambios en tiempo real (SSE).
+const sseClients = new Set();
+// Ejecuta un canal IPC en el Host a petición de una caja cliente (lo
+// registra main.js; valida la lista blanca de canales).
+let rpcHandler = null;
+const setRpcHandler = (fn) => {
+  rpcHandler = fn;
+};
+
+// Empuja un evento de cambio a todas las cajas cliente conectadas.
+const broadcastChange = (info = {}) => {
+  if (sseClients.size === 0) return;
+  const payload = `data: ${JSON.stringify({ type: "change", seq: info.seq || 0, ts: info.ts || Date.now() })}\n\n`;
+  for (const res of [...sseClients]) {
+    try {
+      res.write(payload);
+    } catch {
+      sseClients.delete(res);
+    }
+  }
+};
+
 const startServer = async (db, port = 3456) => {
   if (server) return { success: true, port };
 
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: "10mb" }));
 
   const safe = (handler, exposeDetails = false) => async (req, res) => {
     try {
@@ -89,10 +112,12 @@ const startServer = async (db, port = 3456) => {
 
   app.post("/api/auth/verify", safe((req, res) => {
     const { id, pin } = req.body || {};
-    if (!id || !pin) return res.status(400).json({ success: false, error: "Usuario y PIN requeridos" });
+    if (!id || pin == null || String(pin).trim() === "")
+      return res.status(400).json({ success: false, error: "Usuario y PIN requeridos" });
+    // Comparación como texto: el PIN puede haberse guardado como número.
     const cashier = db
-      .prepare("SELECT id, name, role FROM cashiers WHERE id = ? AND pin = ? AND is_active = 1")
-      .get(id, pin);
+      .prepare("SELECT id, name, role FROM cashiers WHERE id = ? AND CAST(pin AS TEXT) = ? AND is_active = 1")
+      .get(id, String(pin).trim());
     if (!cashier) return res.status(401).json({ success: false, error: "PIN inválido" });
     res.json({ success: true, cashier });
   }));
@@ -191,6 +216,80 @@ const startServer = async (db, port = 3456) => {
       .prepare("SELECT id, device_name, device_type, created_at, last_seen FROM paired_devices ORDER BY created_at DESC")
       .all();
     res.json({ success: true, devices });
+  }));
+
+  // Firma del estado de los datos. Las cajas cliente la consultan cada
+  // pocos segundos para detectar cambios (ventas de otras cajas, stock,
+  // cortes...) y refrescar sus pantallas automáticamente. Se cachea 1s
+  // para que N cajas consultando a la vez no repitan el cálculo.
+  let versionCache = { at: 0, value: null };
+  app.get("/api/db-version", requireAuth, safe((req, res) => {
+    const now = Date.now();
+    if (!versionCache.value || now - versionCache.at > 1000) {
+      versionCache = { at: now, value: dbWatcher.computeLocalSignature(db) };
+    }
+    res.json({ success: true, version: versionCache.value });
+  }));
+
+  // ─── Tiempo real: Server-Sent Events ─────────────────────────
+  // Las cajas cliente mantienen esta conexión abierta; el Host escribe un
+  // evento "change" en cuanto la BD cambia (ver change-bus.js). Un latido
+  // cada 15 s mantiene viva la conexión y deja detectar caídas.
+  app.get("/api/events", requireAuth, (req, res) => {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    if (req.socket) {
+      req.socket.setNoDelay(true);
+      req.socket.setKeepAlive(true);
+    }
+    res.write(`retry: 1000\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "hello", ts: Date.now() })}\n\n`);
+    sseClients.add(res);
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(`: ping\n\n`);
+      } catch {
+        cleanup();
+      }
+    }, 15000);
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      sseClients.delete(res);
+    };
+    req.on("close", cleanup);
+    res.on("error", cleanup);
+  });
+
+  // ─── RPC: operaciones de datos de las cajas cliente ──────────
+  // La caja cliente reenvía aquí sus operaciones (vender, ajustar stock,
+  // editar productos...). Se ejecutan en la BD del Host dentro de las mismas
+  // transacciones que usa su propia interfaz, así que el stock queda
+  // consistente aunque varias cajas operen a la vez (SQLite serializa las
+  // escrituras y la venta descuenta con la guarda `stock >= cantidad`).
+  app.post("/api/rpc", requireAuth, safe(async (req, res) => {
+    if (!rpcHandler) {
+      return res.status(503).json({ success: false, error: "RPC no disponible" });
+    }
+    const { channel, args } = req.body || {};
+    if (typeof channel !== "string" || !channel) {
+      return res.status(400).json({ success: false, error: "Canal requerido" });
+    }
+    const outcome = await rpcHandler(channel, Array.isArray(args) ? args : []);
+    if (outcome && outcome.forbidden) {
+      return res.status(403).json({ success: false, error: "Operación no permitida" });
+    }
+    if (outcome && outcome.error) {
+      return res.json({ success: true, ok: false, error: outcome.error });
+    }
+    res.json({
+      success: true,
+      ok: true,
+      result: outcome && outcome.result !== undefined ? outcome.result : null,
+    });
   }));
 
   // IMPORTANT: /search must come BEFORE :barcode or Express matches "search" as barcode
@@ -560,6 +659,12 @@ const startServer = async (db, port = 3456) => {
 
 const stopServer = () => {
   if (server) {
+    for (const res of [...sseClients]) {
+      try {
+        res.end();
+      } catch {}
+    }
+    sseClients.clear();
     server.close();
     server = null;
     activeTokens = {};
@@ -572,4 +677,4 @@ const getStatus = () => ({
   port: server ? server.address().port : null,
 });
 
-module.exports = { startServer, stopServer, getStatus };
+module.exports = { startServer, stopServer, getStatus, broadcastChange, setRpcHandler };

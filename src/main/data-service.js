@@ -136,6 +136,22 @@ const cacheProductsLocally = (products) => {
   }
 };
 
+// Descarga el catálogo completo del Host y lo guarda en la BD espejo local.
+// Se usa en el sync periódico y también cuando el vigilante detecta que la
+// firma del Host cambió, para que la UI lea datos frescos al recargarse.
+const refreshCatalogCache = async () => {
+  if (!dbRef) return { success: false, error: "BD no inicializada" };
+  try {
+    const products = await clientFetch("/api/products").then((d) => d.products);
+    markOnline();
+    cacheProductsLocally(products);
+    return { success: true, count: products.length };
+  } catch (err) {
+    if (isNetworkError(err)) markOffline();
+    return { success: false, error: err.message };
+  }
+};
+
 const queuePendingSale = (sale, errorMsg) => {
   if (!dbRef) return null;
   const localId = String(Date.now()) + "-" + Math.floor(Math.random() * 1e6);
@@ -317,6 +333,57 @@ const client = {
     clientFetch("/api/sync/sales", { method: "POST", body: JSON.stringify({ sales }) }),
 };
 
+// ─── RPC al Host ───────────────────────────────────────────────
+// En modo Cliente, las operaciones de datos (ventas, stock, productos,
+// caja...) NO se ejecutan en la BD local: se reenvían al Host, que es la
+// única fuente de verdad. Así el stock se descuenta una sola vez, de forma
+// atómica, sin importar cuántas cajas vendan al mismo tiempo.
+class HostRpcError extends Error {}
+
+// Fallo de conexión "limpio": la petición nunca llegó al Host. Solo en ese
+// caso es seguro encolar una venta para subirla luego (si fuera un timeout,
+// el Host pudo haberla registrado ya y se duplicaría).
+const CONNECTION_REFUSED = /fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH/i;
+
+// opts: { readOnly: bool, runLocal: () => Promise<any> }
+const forwardRpc = async (channel, args, opts = {}) => {
+  try {
+    const data = await clientFetch("/api/rpc", {
+      method: "POST",
+      body: JSON.stringify({ channel, args }),
+      signal: AbortSignal.timeout(20000),
+    });
+    markOnline();
+    if (data && data.ok === false) throw new HostRpcError(data.error || "Error en el Host");
+    return data ? data.result : null;
+  } catch (err) {
+    if (err instanceof HostRpcError) throw err;
+    if (!isNetworkError(err)) throw err;
+    markOffline();
+
+    if (channel === "record-sale") {
+      if (CONNECTION_REFUSED.test(String(err.message))) {
+        // Sin conexión: la venta queda en cola y se sube sola al volver el Host.
+        const localId = queuePendingSale(args[0] || {}, err.message);
+        return { success: true, offline: true, saleId: null, localId };
+      }
+      return {
+        success: false,
+        error:
+          "No se pudo confirmar la venta con la caja principal. Revisa el historial antes de volver a cobrar.",
+      };
+    }
+    if (opts.readOnly && typeof opts.runLocal === "function") {
+      // Lectura sin conexión: se responde con la copia local (espejo).
+      return opts.runLocal();
+    }
+    return {
+      success: false,
+      error: "Sin conexión con la caja principal. Intenta de nuevo cuando se restablezca.",
+    };
+  }
+};
+
 // ─── Worker de sincronización ────────────────────────────────
 const syncPendingSales = async () => {
   if (!dbRef || getMode() !== "client") return { success: true, synced: 0 };
@@ -325,13 +392,7 @@ const syncPendingSales = async () => {
     .all();
   if (pending.length === 0) {
     // Aprovecha el ciclo para refrescar el catálogo local con datos del Host.
-    try {
-      const products = await clientFetch("/api/products").then((d) => d.products);
-      markOnline();
-      cacheProductsLocally(products);
-    } catch (err) {
-      if (isNetworkError(err)) markOffline();
-    }
+    await refreshCatalogCache();
     return { success: true, synced: 0 };
   }
 
@@ -360,10 +421,7 @@ const syncPendingSales = async () => {
     });
     txn();
     // Refresca el catálogo local con el estado oficial del Host.
-    try {
-      const products = await clientFetch("/api/products").then((d) => d.products);
-      cacheProductsLocally(products);
-    } catch {}
+    await refreshCatalogCache();
     const synced = results.filter((r) => r.success).length;
     return { success: true, synced };
   } catch (err) {
@@ -554,6 +612,14 @@ module.exports = {
   getPendingCount,
   syncPendingSales,
   stopSyncWorker,
+  refreshCatalogCache,
+  forwardRpc,
+  getHostToken,
+  // URL del Host guardada explícitamente (null si la caja no está emparejada).
+  getSavedHostUrl: () => {
+    const url = getSetting("host_url");
+    return url ? String(url).replace(/\/$/, "") : null;
+  },
   setMode: (mode) => setSetting("app_mode", mode === "client" ? "client" : "host"),
   setHost: (url, token) => {
     setSetting("host_url", url);
